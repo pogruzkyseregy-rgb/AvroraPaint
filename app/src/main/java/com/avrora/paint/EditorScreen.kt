@@ -1,8 +1,5 @@
 package com.avrora.paint
 
-import android.content.Context
-import android.graphics.Bitmap
-import android.os.Environment
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,8 +28,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.io.File
-import java.io.FileOutputStream
 
 private enum class Panel { NONE, BRUSH, LAYERS, TEMPLATES }
 
@@ -50,6 +46,7 @@ private val Swatches = listOf(
 fun EditorScreen() {
     val context = LocalContext.current
     var doc by remember { mutableStateOf(Templates.first().createDocument()) }
+    val view = remember { ViewState() }
     var tool by remember { mutableStateOf(Tool.PEN) }
     var color by remember { mutableStateOf(AvroraColors.Fluorite) }
     var secondColor by remember { mutableStateOf(AvroraColors.Violet) }
@@ -86,6 +83,7 @@ fun EditorScreen() {
         HudFrame(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
             DocumentCanvas(
                 doc = doc,
+                view = view,
                 tool = tool,
                 color = color,
                 secondColor = secondColor,
@@ -109,6 +107,7 @@ fun EditorScreen() {
             Panel.LAYERS -> LayersPanel(doc)
             Panel.TEMPLATES -> TemplatesPanel { template ->
                 doc = template.createDocument()
+                view.fit(doc)
                 panel = Panel.NONE
             }
             Panel.NONE -> Unit
@@ -125,10 +124,14 @@ fun EditorScreen() {
             HudTile("КИСТИ", "перо · мягкая · маркер", panel == Panel.BRUSH, { toggle(Panel.BRUSH) }, Modifier.width(140.dp))
             HudTile("СЛОИ", "стек слоёв", panel == Panel.LAYERS, { toggle(Panel.LAYERS) }, Modifier.width(110.dp))
             HudTile("ШАБЛОНЫ", "новый холст", panel == Panel.TEMPLATES, { toggle(Panel.TEMPLATES) }, Modifier.width(120.dp))
+            HudTile("ВИД", "вписать холст", false, { view.fit(doc) }, Modifier.width(110.dp))
             HudTile("ОТМЕНА", "шаг назад", false, { doc.undo() }, Modifier.width(110.dp))
-            HudTile("СОХРАНИТЬ", "PNG", false, {
-                val path = saveImage(context, doc)
-                Toast.makeText(context, "Сохранено: $path", Toast.LENGTH_LONG).show()
+            HudTile("В ГАЛЕРЕЮ", "PNG", false, {
+                val bitmap = doc.flatten()
+                val uri = saveToGallery(context, bitmap, "avrora_${System.currentTimeMillis()}")
+                bitmap.recycle()
+                val text = if (uri != null) "Сохранено в галерею: Pictures/AvroraPaint" else "Не удалось сохранить"
+                Toast.makeText(context, text, Toast.LENGTH_LONG).show()
             }, Modifier.width(130.dp))
         }
     }
@@ -145,6 +148,10 @@ private fun BrushPanel(
     width: Float,
     onWidth: (Float) -> Unit
 ) {
+    var showPicker by remember { mutableStateOf(false) }
+    var editSecond by remember { mutableStateOf(false) }
+    val targetSecond = editSecond && tool == Tool.GRADIENT
+
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -158,12 +165,40 @@ private fun BrushPanel(
                 )
             }
         }
+
         Text("Цвет", color = AvroraColors.Violet, fontSize = 11.sp)
         SwatchRow(selected = color, onPick = onColor)
         if (tool == Tool.GRADIENT) {
             Text("Цвет 2 для градиента", color = AvroraColors.Violet, fontSize = 11.sp)
             SwatchRow(selected = secondColor, onPick = onSecond)
         }
+
+        TextButton(onClick = { showPicker = !showPicker }) {
+            Text(if (showPicker) "Скрыть палитру" else "Свой цвет", color = AvroraColors.Fluorite)
+        }
+        if (showPicker) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(
+                    selected = !targetSecond,
+                    onClick = { editSecond = false },
+                    label = { Text("Цвет 1") }
+                )
+                if (tool == Tool.GRADIENT) {
+                    FilterChip(
+                        selected = targetSecond,
+                        onClick = { editSecond = true },
+                        label = { Text("Цвет 2") }
+                    )
+                }
+            }
+            key(targetSecond) {
+                ColorPicker(
+                    initial = if (targetSecond) secondColor else color,
+                    onChange = { if (targetSecond) onSecond(it) else onColor(it) }
+                )
+            }
+        }
+
         Text("Толщина: ${width.toInt()}", color = AvroraColors.Text, fontSize = 12.sp)
         Slider(value = width, onValueChange = onWidth, valueRange = 2f..80f)
     }
@@ -262,14 +297,4 @@ private fun Tool.label(): String = when (this) {
     Tool.MARKER -> "Маркер"
     Tool.ERASER -> "Ластик"
     Tool.GRADIENT -> "Градиент"
-}
-
-private fun saveImage(context: Context, doc: Document): String {
-    val dir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
-    dir.mkdirs()
-    val file = File(dir, "avrora_${System.currentTimeMillis()}.png")
-    val bitmap = doc.flatten()
-    FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-    bitmap.recycle()
-    return file.absolutePath
 }

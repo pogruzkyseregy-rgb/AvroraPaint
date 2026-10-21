@@ -1,12 +1,10 @@
 package com.avrora.paint
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -14,64 +12,68 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.consume
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.min
 
-// Соответствие между координатами экрана и координатами документа.
-class Viewport(val scale: Float, val left: Float, val top: Float) {
-    fun toDoc(p: Offset): Offset = Offset((p.x - left) / scale, (p.y - top) / scale)
-}
+// Состояние вида: масштаб и смещение холста на экране.
+class ViewState {
+    var scale by mutableFloatStateOf(1f)
+    var left by mutableFloatStateOf(0f)
+    var top by mutableFloatStateOf(0f)
+    var fitScale = 1f
 
-// Вписываем документ в экран с небольшим отступом.
-fun viewportFor(doc: Document, view: IntSize): Viewport {
-    if (view.width == 0 || view.height == 0) return Viewport(1f, 0f, 0f)
-    val scale = min(view.width.toFloat() / doc.width, view.height.toFloat() / doc.height) * 0.9f
-    val w = doc.width * scale
-    val h = doc.height * scale
-    return Viewport(scale, (view.width - w) / 2f, (view.height - h) / 2f)
+    private var viewW = 0
+    private var viewH = 0
+
+    fun resize(w: Int, h: Int) {
+        viewW = w
+        viewH = h
+    }
+
+    // Вписываем весь документ в экран.
+    fun fit(doc: Document) {
+        if (viewW == 0 || viewH == 0) return
+        fitScale = min(viewW.toFloat() / doc.width, viewH.toFloat() / doc.height) * 0.9f
+        scale = fitScale
+        left = (viewW - doc.width * fitScale) / 2f
+        top = (viewH - doc.height * fitScale) / 2f
+    }
+
+    // Переводим точку экрана в координаты документа.
+    fun toDoc(p: Offset): Offset = Offset((p.x - left) / scale, (p.y - top) / scale)
 }
 
 @Composable
 fun DocumentCanvas(
     doc: Document,
+    view: ViewState,
     tool: Tool,
     color: Color,
     secondColor: Color,
     width: Float,
     modifier: Modifier = Modifier
 ) {
-    var viewSize by remember { mutableStateOf(IntSize.Zero) }
-
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .onSizeChanged { viewSize = it }
+            .onSizeChanged {
+                view.resize(it.width, it.height)
+                view.fit(doc)
+            }
             .pointerInput(doc, tool, color, secondColor, width) {
-                var gradStart: Offset? = null
-                var gradEnd: Offset? = null
-                detectDragGestures(
-                    onDragStart = { p ->
-                        val d = viewportFor(doc, viewSize).toDoc(p)
-                        if (tool == Tool.GRADIENT) {
-                            gradStart = d
-                            gradEnd = d
-                        } else {
-                            doc.beginAction()
-                            doc.stroke(d.x, d.y, tool, color.toArgb(), width)
-                        }
-                    },
-                    onDrag = { change, _ ->
-                        val d = viewportFor(doc, viewSize).toDoc(change.position)
-                        if (tool == Tool.GRADIENT) {
-                            gradEnd = d
-                        } else {
-                            doc.stroke(d.x, d.y, tool, color.toArgb(), width)
-                        }
-                    },
-                    onDragEnd = {
+                awaitPointerEventScope {
+                    var drawing = false
+                    var gradStart: Offset? = null
+                    var gradEnd: Offset? = null
+                    var prevCentroid: Offset? = null
+                    var prevDist = 0f
+
+                    // Завершаем мазок или заливку градиентом.
+                    fun finishDrawing() {
                         if (tool == Tool.GRADIENT) {
                             val s = gradStart
                             val e = gradEnd
@@ -82,20 +84,80 @@ fun DocumentCanvas(
                         } else {
                             doc.endStroke()
                         }
-                    },
-                    onDragCancel = { doc.endStroke() }
-                )
+                        drawing = false
+                    }
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.filter { it.pressed }
+
+                        when {
+                            // Два пальца: масштаб и перемещение холста
+                            pressed.size >= 2 -> {
+                                if (drawing) finishDrawing()
+                                val a = pressed[0].position
+                                val b = pressed[1].position
+                                val centroid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                                val dist = (a - b).getDistance()
+                                val pc = prevCentroid
+                                if (pc != null && prevDist > 0f) {
+                                    // Точка документа под центром жеста остаётся на месте.
+                                    val docPoint = view.toDoc(pc)
+                                    val newScale = (view.scale * (dist / prevDist))
+                                        .coerceIn(view.fitScale * 0.8f, view.fitScale * 8f)
+                                    view.scale = newScale
+                                    view.left = centroid.x - docPoint.x * newScale
+                                    view.top = centroid.y - docPoint.y * newScale
+                                }
+                                prevCentroid = centroid
+                                prevDist = dist
+                                pressed.forEach { it.consume() }
+                            }
+
+                            // Один палец: рисуем
+                            pressed.size == 1 -> {
+                                prevCentroid = null
+                                prevDist = 0f
+                                val p = pressed[0]
+                                val d = view.toDoc(p.position)
+                                if (p.changedToDown()) {
+                                    if (tool == Tool.GRADIENT) {
+                                        gradStart = d
+                                        gradEnd = d
+                                    } else {
+                                        doc.beginAction()
+                                        doc.stroke(d.x, d.y, tool, color.toArgb(), width)
+                                    }
+                                    drawing = true
+                                } else if (drawing) {
+                                    if (tool == Tool.GRADIENT) {
+                                        gradEnd = d
+                                    } else {
+                                        doc.stroke(d.x, d.y, tool, color.toArgb(), width)
+                                    }
+                                }
+                                p.consume()
+                            }
+
+                            // Пальцев нет: завершаем, если что-то рисовали
+                            else -> {
+                                prevCentroid = null
+                                prevDist = 0f
+                                if (drawing) finishDrawing()
+                            }
+                        }
+                    }
+                }
             }
     ) {
         // Подписываемся на изменения, чтобы холст перерисовывался.
         val rev = doc.revision
 
-        val v = viewportFor(doc, viewSize)
-        val w = doc.width * v.scale
-        val h = doc.height * v.scale
+        val w = doc.width * view.scale
+        val h = doc.height * view.scale
 
         // Белая бумага под документом.
-        drawRect(Color.White, topLeft = Offset(v.left, v.top), size = Size(w, h))
+        drawRect(Color.White, topLeft = Offset(view.left, view.top), size = Size(w, h))
 
         // Слои рисуем снизу вверх.
         for (layer in doc.layers) {
@@ -103,7 +165,7 @@ fun DocumentCanvas(
             drawImage(
                 image = layer.bitmap.asImageBitmap(),
                 srcSize = IntSize(doc.width, doc.height),
-                dstOffset = IntOffset(v.left.toInt(), v.top.toInt()),
+                dstOffset = IntOffset(view.left.toInt(), view.top.toInt()),
                 dstSize = IntSize(w.toInt(), h.toInt()),
                 alpha = layer.opacity
             )
