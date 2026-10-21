@@ -28,7 +28,8 @@ jobs:
 
       - name: Show compile errors
         if: failure()
-        run: grep -E "^e: |What went wrong" -A2 build.log || true
+        run: |
+          grep -E "^e: |What went wrong" -A2 build.log || true
 
       - name: Show built APK files
         run: find app/build/outputs -name "*.apk" || true
