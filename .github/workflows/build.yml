@@ -21,7 +21,14 @@ jobs:
           gradle-version: 8.9
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+
+      - name: Show compile errors
+        if: failure()
+        run: grep -E "^e: |What went wrong" -A2 build.log || true
 
       - name: Show built APK files
         run: find app/build/outputs -name "*.apk" || true
