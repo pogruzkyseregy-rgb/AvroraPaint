@@ -18,6 +18,13 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -27,6 +34,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -100,6 +108,47 @@ fun DocumentCanvas(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     touchCallback()
+
+                    // Трансформация: один палец двигает, два — масштабируют и вращают.
+                    if (doc.floating != null) {
+                        down.consume()
+                        var prev: List<Offset> = listOf(view.toDoc(down.position))
+                        while (true) {
+                            val ev = awaitPointerEvent()
+                            val pressed = ev.changes.filter { it.pressed }
+                            if (pressed.isEmpty()) {
+                                ev.changes.forEach { it.consume() }
+                                break
+                            }
+                            val pts = pressed.take(2).map { view.toDoc(it.position) }
+                            if (pts.size == prev.size) {
+                                val m = android.graphics.Matrix()
+                                if (pts.size == 1) {
+                                    m.setTranslate(pts[0].x - prev[0].x, pts[0].y - prev[0].y)
+                                } else {
+                                    val d0 = prev[1] - prev[0]
+                                    val d1 = pts[1] - pts[0]
+                                    val len0 = d0.getDistance()
+                                    if (len0 > 1f) {
+                                        val k = d1.getDistance() / len0
+                                        val deg = Math.toDegrees(
+                                            (atan2(d1.y, d1.x) - atan2(d0.y, d0.x)).toDouble()
+                                        ).toFloat()
+                                        val c0 = (prev[0] + prev[1]) / 2f
+                                        val c1 = (pts[0] + pts[1]) / 2f
+                                        m.setTranslate(-c0.x, -c0.y)
+                                        m.postScale(k, k)
+                                        m.postRotate(deg)
+                                        m.postTranslate(c1.x, c1.y)
+                                    }
+                                }
+                                doc.transformBy(m)
+                            }
+                            prev = pts
+                            ev.changes.forEach { it.consume() }
+                        }
+                        return@awaitEachGesture
+                    }
                     val startTime = down.uptimeMillis
                     var lastTime = startTime
                     val slop = viewConfiguration.touchSlop
@@ -286,30 +335,123 @@ fun DocumentCanvas(
             size = Size(w + 2f, h + 2f)
         )
 
+        // Точка холста -> точка экрана (отражение делает блок scale ниже).
+        fun screen(o: Offset) = Offset(view.left + o.x * view.scale, view.top + o.y * view.scale)
+        fun polygon(points: List<Offset>, close: Boolean): Path {
+            val path = Path()
+            points.forEachIndexed { idx, o ->
+                val sp = screen(o)
+                if (idx == 0) path.moveTo(sp.x, sp.y) else path.lineTo(sp.x, sp.y)
+            }
+            if (close) path.close()
+            return path
+        }
+
+        val selection = doc.selection
+        val selectionScreen = selection?.let { polygon(it, true) }
+        val filterMatrix = if (editor.filterPreview && !editor.filter.isIdentity) {
+            ColorFilter.colorMatrix(editor.filter.toComposeMatrix())
+        } else {
+            null
+        }
+
         scale(scaleX = if (view.flipped) -1f else 1f, scaleY = 1f, pivot = pivot) {
             drawRect(Color.White, topLeft = topLeft, size = Size(w, h))
             doc.layers.forEachIndexed { i, layer ->
+                val isActive = i == doc.activeIndex
                 if (layer.visible) {
-                    drawImage(
-                        image = layer.bitmap.asImageBitmap(),
-                        srcOffset = IntOffset.Zero,
-                        srcSize = srcSize,
-                        dstOffset = dstOffset,
-                        dstSize = dstSize,
-                        alpha = layer.opacity,
-                        blendMode = layer.blend.composeMode(),
-                        filterQuality = quality
-                    )
+                    val drawLayer = { cf: ColorFilter? ->
+                        drawImage(
+                            image = layer.bitmap.asImageBitmap(),
+                            srcOffset = IntOffset.Zero,
+                            srcSize = srcSize,
+                            dstOffset = dstOffset,
+                            dstSize = dstSize,
+                            alpha = layer.opacity,
+                            colorFilter = cf,
+                            blendMode = layer.blend.composeMode(),
+                            filterQuality = quality
+                        )
+                    }
+                    if (isActive && filterMatrix != null && selectionScreen != null) {
+                        // Фильтр виден только внутри выделения — как и при применении.
+                        val inside = if (doc.selectionInverted) ClipOp.Difference else ClipOp.Intersect
+                        val outside = if (doc.selectionInverted) ClipOp.Intersect else ClipOp.Difference
+                        clipPath(selectionScreen, clipOp = outside) { drawLayer(null) }
+                        clipPath(selectionScreen, clipOp = inside) { drawLayer(filterMatrix) }
+                    } else {
+                        drawLayer(if (isActive) filterMatrix else null)
+                    }
                 }
-                if (i == doc.activeIndex && doc.bufferVisible) {
-                    drawImage(
-                        image = doc.strokeBuffer.asImageBitmap(),
-                        srcOffset = IntOffset.Zero,
-                        srcSize = srcSize,
-                        dstOffset = dstOffset,
-                        dstSize = dstSize,
-                        alpha = (doc.bufferAlpha * layer.opacity).coerceIn(0f, 1f),
-                        filterQuality = quality
+                if (isActive && doc.bufferVisible) {
+                    val drawBuffer = {
+                        drawImage(
+                            image = doc.strokeBuffer.asImageBitmap(),
+                            srcOffset = IntOffset.Zero,
+                            srcSize = srcSize,
+                            dstOffset = dstOffset,
+                            dstSize = dstSize,
+                            alpha = (doc.bufferAlpha * layer.opacity).coerceIn(0f, 1f),
+                            filterQuality = quality
+                        )
+                    }
+                    if (selectionScreen != null) {
+                        clipPath(
+                            selectionScreen,
+                            clipOp = if (doc.selectionInverted) ClipOp.Difference else ClipOp.Intersect
+                        ) { drawBuffer() }
+                    } else {
+                        drawBuffer()
+                    }
+                }
+                val f = doc.floating
+                if (f != null && f.layer === layer) {
+                    val m = android.graphics.Matrix(f.matrix)
+                    m.postScale(view.scale, view.scale)
+                    m.postTranslate(view.left, view.top)
+                    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+                        alpha = (layer.opacity * 255).toInt()
+                    }
+                    drawIntoCanvas { it.nativeCanvas.drawBitmap(f.bitmap, m, paint) }
+
+                    // Рамка с уголками вокруг куска.
+                    val pts = floatArrayOf(
+                        0f, 0f, f.bitmap.width.toFloat(), 0f,
+                        f.bitmap.width.toFloat(), f.bitmap.height.toFloat(), 0f, f.bitmap.height.toFloat()
+                    )
+                    m.mapPoints(pts)
+                    val frame = Path().apply {
+                        moveTo(pts[0], pts[1])
+                        lineTo(pts[2], pts[3])
+                        lineTo(pts[4], pts[5])
+                        lineTo(pts[6], pts[7])
+                        close()
+                    }
+                    drawPath(frame, Color.Black.copy(alpha = 0.6f), style = Stroke(width = 3.dp.toPx()))
+                    drawPath(frame, AvroraColors.Fluorite, style = Stroke(width = 1.5.dp.toPx()))
+                    for (k in 0 until 4) {
+                        val c = Offset(pts[k * 2], pts[k * 2 + 1])
+                        drawCircle(Color.White, radius = 6.dp.toPx(), center = c)
+                        drawCircle(AvroraColors.Violet, radius = 6.dp.toPx(), center = c, style = Stroke(width = 2.dp.toPx()))
+                    }
+                }
+            }
+
+            // Контур выделения: белая линия и чёрный пунктир поверх.
+            val outline = selectionScreen ?: doc.selectionDraft.takeIf { it.size >= 2 }?.let {
+                polygon(it, editor.tool == Tool.SELECT_RECT)
+            }
+            if (outline != null) {
+                val dash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))
+                drawPath(outline, Color.White, style = Stroke(width = 1.5.dp.toPx()))
+                drawPath(outline, Color.Black, style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash))
+                if (selectionScreen != null && doc.selectionInverted) {
+                    drawRect(Color.White, topLeft = topLeft, size = Size(w, h), style = Stroke(width = 1.5.dp.toPx()))
+                    drawRect(
+                        Color.Black,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash)
                     )
                 }
             }

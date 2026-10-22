@@ -1,5 +1,6 @@
 package com.avrora.paint
 
+import android.graphics.Bitmap
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,6 +43,55 @@ class EditorState {
     // Показывать кружок размера кисти, пока двигают ползунок.
     var sizePreview by mutableStateOf(false)
 
+    // Внутренний буфер обмена: живёт между работами, пока открыто приложение.
+    var clipboard: Bitmap? = null
+        private set
+    private var clipboardOrigin = Offset(0f, 0f)
+    var hasClipboard by mutableStateOf(false)
+        private set
+
+    // Цветокоррекция и показывать ли её на холсте до применения.
+    var filter by mutableStateOf(FilterParams())
+    var filterPreview by mutableStateOf(false)
+
+    private var selStart = Offset(0f, 0f)
+
+    fun copy(doc: Document): Boolean {
+        val (bmp, origin) = doc.copySelection() ?: return false
+        setClipboard(bmp, origin)
+        return true
+    }
+
+    fun cut(doc: Document): Boolean {
+        val (bmp, origin) = doc.cutSelection() ?: return false
+        setClipboard(bmp, origin)
+        return true
+    }
+
+    private fun setClipboard(bmp: Bitmap, origin: Offset) {
+        clipboard?.recycle()
+        clipboard = bmp
+        clipboardOrigin = origin
+        hasClipboard = true
+    }
+
+    // Вставляем туда же, откуда скопировали; если не влезает — по центру.
+    fun paste(doc: Document): Boolean {
+        val src = clipboard ?: return false
+        if (doc.busy) return false
+        val m = android.graphics.Matrix()
+        val fits = clipboardOrigin.x + src.width <= doc.width && clipboardOrigin.y + src.height <= doc.height
+        if (fits) {
+            m.setTranslate(clipboardOrigin.x, clipboardOrigin.y)
+        } else {
+            val s = minOf(1f, doc.width.toFloat() / src.width, doc.height.toFloat() / src.height)
+            m.setScale(s, s)
+            m.postTranslate((doc.width - src.width * s) / 2f, (doc.height - src.height * s) / 2f)
+        }
+        doc.beginPaste(src.copy(Bitmap.Config.ARGB_8888, false), m, "Вставка")
+        return true
+    }
+
     fun flash(text: String) {
         flashText = text
         flashId++
@@ -75,6 +125,11 @@ class EditorState {
             tool.isBrush -> doc.beginStroke(tool, color.toArgb(), size, strokeOpacity(), p.x, p.y)
             tool.isShape -> doc.beginShape(tool, color.toArgb(), size, opacity, shapeFill, p.x, p.y)
             tool == Tool.GRADIENT -> doc.beginGradient(color.toArgb(), secondColor.toArgb(), opacity, p.x, p.y)
+            tool == Tool.SELECT_RECT -> {
+                selStart = p
+                doc.setDraft(rectPoints(p, p))
+            }
+            tool == Tool.SELECT_LASSO -> doc.setDraft(listOf(p))
             else -> Unit
         }
     }
@@ -84,18 +139,27 @@ class EditorState {
             tool.isBrush -> doc.strokeTo(p.x, p.y)
             tool.isShape -> doc.updateShape(p.x, p.y)
             tool == Tool.GRADIENT -> doc.updateGradient(p.x, p.y)
+            tool == Tool.SELECT_RECT -> doc.setDraft(rectPoints(selStart, p))
+            tool == Tool.SELECT_LASSO -> doc.addDraftPoint(p)
             else -> Unit
         }
     }
 
+    private fun rectPoints(a: Offset, b: Offset): List<Offset> =
+        listOf(Offset(a.x, a.y), Offset(b.x, a.y), Offset(b.x, b.y), Offset(a.x, b.y))
+
     fun end(doc: Document) {
+        if (tool.isSelect) {
+            doc.commitDraft()
+            return
+        }
         if (!doc.busy) return
         doc.endOp()
         if (tool != Tool.ERASER) pushRecent(color)
     }
 
     fun cancel(doc: Document) {
-        doc.cancelOp()
+        if (tool.isSelect) doc.clearDraft() else doc.cancelOp()
     }
 
     // Короткое касание одним пальцем без движения.
@@ -109,6 +173,7 @@ class EditorState {
                 if (doc.floodFill(p.x, p.y, color.toArgb(), opacity, fillTolerance.toInt())) pushRecent(color)
             }
             tool == Tool.PICKER -> pickAt(doc, p)
+            tool.isSelect -> doc.clearSelection()
             else -> Unit
         }
     }

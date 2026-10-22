@@ -15,13 +15,18 @@ enum class Tool(val label: String, val caption: String) {
     PICKER("Пипетка", "взять цвет"),
     LINE("Линия", "прямая"),
     RECT("Прямоуг.", "прямоугольник"),
-    OVAL("Овал", "эллипс");
+    OVAL("Овал", "эллипс"),
+    SELECT_RECT("Рамка", "выделить прямоугольник"),
+    SELECT_LASSO("Лассо", "выделить от руки");
 
     val isBrush: Boolean
         get() = this == PEN || this == SOFT || this == AIRBRUSH || this == MARKER || this == ERASER
 
     val isShape: Boolean
         get() = this == LINE || this == RECT || this == OVAL
+
+    val isSelect: Boolean
+        get() = this == SELECT_RECT || this == SELECT_LASSO
 }
 
 // Режимы наложения слоёв.

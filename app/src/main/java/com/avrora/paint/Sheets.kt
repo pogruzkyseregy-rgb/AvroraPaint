@@ -66,6 +66,8 @@ private fun Tool.hint(): String = when (this) {
     Tool.LINE -> "Тяните от начала до конца линии"
     Tool.RECT -> "Тяните от одного угла до другого"
     Tool.OVAL -> "Тяните от одного угла до другого"
+    Tool.SELECT_RECT -> "Тяните рамку. Потом можно копировать, вырезать и двигать"
+    Tool.SELECT_LASSO -> "Обведите пальцем нужную часть рисунка"
 }
 
 // Общая рамка выдвижной панели: ручка, заголовок, кнопка закрытия.
@@ -126,11 +128,21 @@ fun SheetContainer(title: String, onClose: () -> Unit, content: @Composable Colu
 // ---------- Инструменты ----------
 
 @Composable
-fun ToolsSheet(editor: EditorState, onClose: () -> Unit) {
+fun ToolsSheet(editor: EditorState, onTransform: () -> Unit, onFilters: () -> Unit, onClose: () -> Unit) {
     SheetContainer("ИНСТРУМЕНТЫ", onClose) {
         ToolGroup("КИСТИ", listOf(Tool.PEN, Tool.SOFT, Tool.AIRBRUSH, Tool.MARKER, Tool.ERASER), editor)
         ToolGroup("ЦВЕТ И ЗАЛИВКА", listOf(Tool.FILL, Tool.GRADIENT, Tool.PICKER), editor)
         ToolGroup("ФИГУРЫ", listOf(Tool.LINE, Tool.RECT, Tool.OVAL), editor)
+        SectionLabel("ВЫДЕЛЕНИЕ И ПРАВКА")
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+        ) {
+            ToolTile(Tool.SELECT_RECT, editor.tool == Tool.SELECT_RECT, Modifier.weight(1f)) { editor.selectTool(Tool.SELECT_RECT) }
+            ToolTile(Tool.SELECT_LASSO, editor.tool == Tool.SELECT_LASSO, Modifier.weight(1f)) { editor.selectTool(Tool.SELECT_LASSO) }
+            ActionTile(Ico.TRANSFORM, "Трансформ", Modifier.weight(1f), onTransform)
+            ActionTile(Ico.FX, "Эффекты", Modifier.weight(1f), onFilters)
+        }
 
         val tool = editor.tool
         Spacer(Modifier.height(12.dp))
@@ -405,4 +417,105 @@ fun Checker(modifier: Modifier = Modifier) {
             row++
         }
     }
+}
+
+// Плитка-действие (не инструмент): иконка и подпись.
+@Composable
+fun ActionTile(icon: Ico, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = modifier
+            .height(68.dp)
+            .clip(shape)
+            .background(AvroraColors.Black.copy(alpha = 0.5f))
+            .border(1.dp, GlassBorder, shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            AvIcon(icon, AvroraColors.Violet, 26.dp)
+            Spacer(Modifier.height(4.dp))
+            Text(label, color = AvroraColors.Text.copy(alpha = 0.85f), fontSize = 11.sp, maxLines = 1)
+        }
+    }
+}
+
+// ---------- Эффекты ----------
+
+@Composable
+fun FiltersSheet(doc: Document, editor: EditorState, onClose: () -> Unit) {
+    // Пока панель открыта, изменения видны на холсте.
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        editor.filterPreview = true
+        onDispose { editor.filterPreview = false }
+    }
+    var blur by remember { androidx.compose.runtime.mutableFloatStateOf(8f) }
+    val f = editor.filter
+
+    SheetContainer("ЭФФЕКТЫ", onClose) {
+        Text(
+            if (doc.hasSelection) "Меняется только выделенная часть активного слоя"
+            else "Меняется активный слой · ${doc.active?.name ?: ""}",
+            color = AvroraColors.Text.copy(alpha = 0.65f),
+            fontSize = 12.sp
+        )
+        FilterSlider("ЯРКОСТЬ", "${(f.brightness * 100).toInt()}", f.brightness, -1f..1f) {
+            editor.filter = editor.filter.copy(brightness = it)
+        }
+        FilterSlider("КОНТРАСТ", "${(f.contrast * 100).toInt()}%", f.contrast, 0f..2f) {
+            editor.filter = editor.filter.copy(contrast = it)
+        }
+        FilterSlider("НАСЫЩЕННОСТЬ", "${(f.saturation * 100).toInt()}%", f.saturation, 0f..2f) {
+            editor.filter = editor.filter.copy(saturation = it)
+        }
+        FilterSlider("ОТТЕНОК", "${f.hue.toInt()}°", f.hue, -180f..180f) {
+            editor.filter = editor.filter.copy(hue = it)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+            AvIcon(Ico.INVERT, AvroraColors.Violet, 20.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Инверсия цветов", color = AvroraColors.Text, modifier = Modifier.weight(1f))
+            Switch(checked = f.invert, onCheckedChange = { editor.filter = editor.filter.copy(invert = it) })
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState())
+        ) {
+            SmallAction("Ч/Б") { editor.filter = FilterParams(saturation = 0f) }
+            SmallAction("Ярче") { editor.filter = FilterParams(brightness = 0.12f, contrast = 1.15f, saturation = 1.2f) }
+            SmallAction("Холодный") { editor.filter = FilterParams(hue = -18f, saturation = 1.1f) }
+            SmallAction("Сброс") { editor.filter = FilterParams() }
+        }
+        Spacer(Modifier.height(10.dp))
+        SmallAction("Применить", Ico.CHECK) {
+            if (!editor.filter.isIdentity) {
+                doc.applyColorMatrix(editor.filter.toColorMatrix())
+                editor.filter = FilterParams()
+                editor.flash("Эффект применён")
+            }
+        }
+
+        SectionLabel("РАЗМЫТИЕ · ${blur.toInt()}")
+        Slider(value = blur, onValueChange = { blur = it }, valueRange = 2f..64f)
+        SmallAction("Размыть слой", Ico.SOFT) {
+            doc.blurActive(blur)
+            editor.flash("Размыто")
+        }
+    }
+}
+
+@Composable
+private fun FilterSlider(
+    title: String,
+    value: String,
+    current: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        Text(title, color = AvroraColors.Violet, fontSize = 11.sp, letterSpacing = 1.sp, modifier = Modifier.weight(1f))
+        Text(value, color = AvroraColors.Fluorite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+    Slider(value = current, onValueChange = onChange, valueRange = range)
 }

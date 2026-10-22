@@ -22,7 +22,8 @@ enum class Ico {
     BACK, UNDO, REDO, MORE, CLOSE, PLUS,
     PEN, SOFT, AIRBRUSH, MARKER, ERASER, FILL, GRADIENT, PICKER, LINE, RECT, OVAL,
     LAYERS, EYE, EYE_OFF, COPY, MERGE, UP, DOWN, PHOTO, TRASH, CLEAR, LOCK,
-    FLIP, FIT, SAVE, EXPORT, HELP
+    FLIP, FIT, SAVE, EXPORT, HELP,
+    SELECT_RECT, LASSO, TRANSFORM, CUT, PASTE, FX, INVERT, SELECT_ALL, DESELECT, ROTATE, FLIP_V, CHECK
 }
 
 fun Tool.icon(): Ico = when (this) {
@@ -37,6 +38,8 @@ fun Tool.icon(): Ico = when (this) {
     Tool.LINE -> Ico.LINE
     Tool.RECT -> Ico.RECT
     Tool.OVAL -> Ico.OVAL
+    Tool.SELECT_RECT -> Ico.SELECT_RECT
+    Tool.SELECT_LASSO -> Ico.LASSO
 }
 
 @Composable
@@ -269,6 +272,91 @@ fun DrawScope.drawIco(icon: Ico, tint: Color) {
                 poly(4f, 16f, 9f, 11f, 13f, 15f, 16f, 12f, 20f, 16f)
                 circle(15.5f, 8.5f, 1.4f, fill = true)
             }
+            Ico.SELECT_RECT -> {
+                // Пунктирная рамка
+                line(4f, 4f, 8f, 4f); line(11f, 4f, 13f, 4f); line(16f, 4f, 20f, 4f)
+                line(4f, 20f, 8f, 20f); line(11f, 20f, 13f, 20f); line(16f, 20f, 20f, 20f)
+                line(4f, 4f, 4f, 8f); line(4f, 11f, 4f, 13f); line(4f, 16f, 4f, 20f)
+                line(20f, 4f, 20f, 8f); line(20f, 11f, 20f, 13f); line(20f, 16f, 20f, 20f)
+            }
+            Ico.LASSO -> {
+                path {
+                    m(12f, 4f)
+                    c(18f, 4f, 21f, 7f, 21f, 10f)
+                    c(21f, 13f, 17f, 15f, 12f, 15f)
+                    c(7f, 15f, 3f, 13f, 3f, 10f)
+                    c(3f, 7f, 6f, 4f, 12f, 4f)
+                }
+                path {
+                    m(8f, 14f)
+                    c(7f, 17f, 9f, 19f, 7f, 21f)
+                }
+                circle(7f, 21f, 1.2f, fill = true)
+            }
+            Ico.TRANSFORM -> {
+                rect(6f, 6f, 18f, 18f)
+                rect(3f, 3f, 7f, 7f, fill = true)
+                rect(17f, 3f, 21f, 7f, fill = true)
+                rect(3f, 17f, 7f, 21f, fill = true)
+                rect(17f, 17f, 21f, 21f, fill = true)
+            }
+            Ico.CUT -> {
+                circle(6.5f, 17.5f, 3f)
+                circle(17.5f, 17.5f, 3f)
+                line(8.5f, 15.5f, 18f, 3f)
+                line(15.5f, 15.5f, 6f, 3f)
+            }
+            Ico.PASTE -> {
+                rect(5f, 5f, 19f, 21f)
+                rect(9f, 3f, 15f, 7f, fill = true)
+                line(9f, 12f, 15f, 12f)
+                line(9f, 16f, 13f, 16f)
+            }
+            Ico.FX -> {
+                path {
+                    m(12f, 2f); l(14f, 9f); l(21f, 11f); l(14f, 13f)
+                    l(12f, 20f); l(10f, 13f); l(3f, 11f); l(10f, 9f); close()
+                }
+                circle(19f, 19f, 1.5f, fill = true)
+                circle(5f, 4f, 1f, fill = true)
+            }
+            Ico.INVERT -> {
+                circle(12f, 12f, 8.5f)
+                path(fill = true) {
+                    m(12f, 3.5f)
+                    c(16.7f, 3.5f, 20.5f, 7.3f, 20.5f, 12f)
+                    c(20.5f, 16.7f, 16.7f, 20.5f, 12f, 20.5f)
+                    close()
+                }
+            }
+            Ico.SELECT_ALL -> {
+                rect(4f, 4f, 20f, 20f)
+                rect(8f, 8f, 16f, 16f, fill = true)
+            }
+            Ico.DESELECT -> {
+                line(4f, 4f, 8f, 4f); line(16f, 4f, 20f, 4f)
+                line(4f, 20f, 8f, 20f); line(16f, 20f, 20f, 20f)
+                line(4f, 4f, 4f, 8f); line(4f, 16f, 4f, 20f)
+                line(20f, 4f, 20f, 8f); line(20f, 16f, 20f, 20f)
+                line(9f, 9f, 15f, 15f)
+                line(15f, 9f, 9f, 15f)
+            }
+            Ico.ROTATE -> {
+                path {
+                    m(19f, 12f)
+                    c(19f, 16f, 16f, 19f, 12f, 19f)
+                    c(8f, 19f, 5f, 16f, 5f, 12f)
+                    c(5f, 8f, 8f, 5f, 12f, 5f)
+                    l(16f, 5f)
+                }
+                poly(13f, 2f, 16f, 5f, 13f, 8f)
+            }
+            Ico.FLIP_V -> {
+                line(3f, 12f, 21f, 12f, 1.4f)
+                poly(6f, 9f, 18f, 9f, 18f, 3f, close = true, fill = true)
+                poly(6f, 15f, 18f, 15f, 18f, 21f, close = true)
+            }
+            Ico.CHECK -> poly(5f, 12f, 10f, 17f, 19f, 7f)
             Ico.HELP -> {
                 circle(12f, 12f, 9f)
                 path {

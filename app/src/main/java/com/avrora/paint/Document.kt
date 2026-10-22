@@ -3,7 +3,10 @@ package com.avrora.paint
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
@@ -16,6 +19,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -35,13 +39,16 @@ class Layer(val id: Long, name: String, var bitmap: Bitmap) {
 
 // Запись истории. layerList — порядок слоёв (если менялся),
 // pixels — копии картинок слоёв до изменения.
+// Кусок картинки, который двигают, масштабируют и вращают.
+class FloatingPiece(val bitmap: Bitmap, val layer: Layer, val matrix: Matrix)
+
 internal class HistoryEntry(
     val layerList: List<Layer>?,
     val active: Int,
     val pixels: List<Pair<Layer, Bitmap>>
 )
 
-internal enum class Op { NONE, STROKE, ERASE, SHAPE, GRADIENT }
+internal enum class Op { NONE, STROKE, ERASE, SHAPE, GRADIENT, TRANSFORM }
 
 class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID().toString()) {
 
@@ -237,32 +244,27 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
     fun clearActive() {
         val layer = active ?: return
         pushPixels(layer)
-        layer.bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
+        layerCanvas(layer).drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         touch()
+        settled()
     }
 
     fun fillActive(color: Int) {
         val layer = active ?: return
         pushPixels(layer)
         val mode = if (layer.alphaLock) PorterDuff.Mode.SRC_ATOP else PorterDuff.Mode.SRC_OVER
-        Canvas(layer.bitmap).drawColor(color, mode)
+        layerCanvas(layer).drawColor(color, mode)
         touch()
+        settled()
     }
 
-    // Вставляем фото новым слоем, вписав его в холст.
+    // Вставляем фото новым слоем, вписав в холст, и сразу даём его подвинуть.
     fun importImage(src: Bitmap) {
-        pushStructure()
-        val layer = Layer(nextId++, "Фото", newBitmap())
         val s = min(width.toFloat() / src.width, height.toFloat() / src.height)
-        val w = src.width * s
-        val h = src.height * s
-        val l = (width - w) / 2f
-        val t = (height - h) / 2f
-        Canvas(layer.bitmap).drawBitmap(src, null, RectF(l, t, l + w, t + h), Paint(Paint.FILTER_BITMAP_FLAG))
-        val index = if (activeIndex in layers.indices) activeIndex + 1 else layers.size
-        layers.add(index, layer)
-        activeIndex = index
-        touch()
+        val m = Matrix()
+        m.setScale(s, s)
+        m.postTranslate((width - src.width * s) / 2f, (height - src.height * s) / 2f)
+        beginPaste(src.copy(Bitmap.Config.ARGB_8888, false), m, "Фото")
     }
 
     // ---------- Мазки кистью и ластиком ----------
@@ -278,7 +280,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         if (tool == Tool.ERASER) {
             op = Op.ERASE
             opPaint = eraserPaint(size, strength)
-            Canvas(layer.bitmap).drawPoint(x, y, opPaint)
+            layerCanvas(layer).drawPoint(x, y, opPaint)
         } else {
             op = Op.STROKE
             opPaint = brushPaint(tool, color, size)
@@ -298,8 +300,8 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
             moveTo(midX, midY)
             quadTo(lastX, lastY, mx, my)
         }
-        val target = if (op == Op.ERASE) layer.bitmap else strokeBuffer
-        Canvas(target).drawPath(path, opPaint)
+        val canvas = if (op == Op.ERASE) layerCanvas(layer) else Canvas(strokeBuffer)
+        canvas.drawPath(path, opPaint)
         midX = mx; midY = my
         lastX = x; lastY = y
         touch()
@@ -378,7 +380,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
     fun endOp() {
         val layer = active
         when (op) {
-            Op.NONE -> return
+            Op.NONE, Op.TRANSFORM -> return
             Op.STROKE -> if (layer != null) {
                 if (hypot(lastX - midX, lastY - midY) > 0.5f) {
                     Canvas(strokeBuffer).drawLine(midX, midY, lastX, lastY, opPaint)
@@ -386,7 +388,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
                 commitBuffer(layer)
             }
             Op.ERASE -> if (layer != null && hypot(lastX - midX, lastY - midY) > 0.5f) {
-                Canvas(layer.bitmap).drawLine(midX, midY, lastX, lastY, opPaint)
+                layerCanvas(layer).drawLine(midX, midY, lastX, lastY, opPaint)
             }
             Op.SHAPE, Op.GRADIENT -> if (layer != null) commitBuffer(layer)
         }
@@ -399,6 +401,10 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
     // Отменяем начатое действие так, будто его не было.
     fun cancelOp() {
         if (op == Op.NONE) return
+        if (op == Op.TRANSFORM) {
+            cancelTransform()
+            return
+        }
         undoStack.removeLastOrNull()?.let { applyEntry(it) }
         strokeBuffer.eraseColor(android.graphics.Color.TRANSPARENT)
         op = Op.NONE
@@ -418,7 +424,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
             alpha = (bufferAlpha * 255).toInt()
             if (layer.alphaLock) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
-        Canvas(layer.bitmap).drawBitmap(strokeBuffer, 0f, 0f, paint)
+        layerCanvas(layer).drawBitmap(strokeBuffer, 0f, 0f, paint)
         strokeBuffer.eraseColor(android.graphics.Color.TRANSPARENT)
     }
 
@@ -600,6 +606,287 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
             xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
         }
 
+    // ---------- Выделение ----------
+
+    // Контур выделения в координатах холста. null — выделения нет.
+    var selection by mutableStateOf<List<Offset>?>(null)
+        private set
+    var selectionInverted by mutableStateOf(false)
+        private set
+
+    // Контур, который рисуют прямо сейчас (рамка или лассо).
+    var selectionDraft by mutableStateOf<List<Offset>>(emptyList())
+        private set
+
+    val hasSelection: Boolean get() = selection != null
+
+    fun setDraft(points: List<Offset>) {
+        selectionDraft = points
+        touch()
+    }
+
+    fun addDraftPoint(p: Offset) {
+        val last = selectionDraft.lastOrNull()
+        if (last == null || (p - last).getDistance() > 2f) {
+            selectionDraft = selectionDraft + p
+            touch()
+        }
+    }
+
+    fun commitDraft() {
+        val pts = selectionDraft
+        selectionDraft = emptyList()
+        if (pts.size >= 3 && polygonArea(pts) > 16f) {
+            selection = pts
+            selectionInverted = false
+        } else {
+            selection = null
+        }
+        touch()
+        settled()
+    }
+
+    fun clearDraft() {
+        selectionDraft = emptyList()
+        touch()
+    }
+
+    fun selectAll() {
+        selection = listOf(
+            Offset(0f, 0f), Offset(width.toFloat(), 0f),
+            Offset(width.toFloat(), height.toFloat()), Offset(0f, height.toFloat())
+        )
+        selectionInverted = false
+        touch()
+        settled()
+    }
+
+    fun invertSelection() {
+        if (selection == null) return
+        selectionInverted = !selectionInverted
+        touch()
+        settled()
+    }
+
+    fun clearSelection() {
+        selection = null
+        selectionInverted = false
+        selectionDraft = emptyList()
+        touch()
+        settled()
+    }
+
+    private fun selectionPath(): Path? {
+        val pts = selection ?: return null
+        if (pts.size < 3) return null
+        val p = Path()
+        p.moveTo(pts[0].x, pts[0].y)
+        for (i in 1 until pts.size) p.lineTo(pts[i].x, pts[i].y)
+        p.close()
+        p.fillType = if (selectionInverted) Path.FillType.INVERSE_WINDING else Path.FillType.WINDING
+        return p
+    }
+
+    // Холст слоя, ограниченный выделением.
+    private fun layerCanvas(layer: Layer): Canvas {
+        val c = Canvas(layer.bitmap)
+        selectionPath()?.let { c.clipPath(it) }
+        return c
+    }
+
+    // Прямоугольник выделения в целых пикселях, обрезанный по холсту.
+    private fun selectionBounds(): android.graphics.Rect? {
+        val path = selectionPath() ?: return android.graphics.Rect(0, 0, width, height)
+        if (selectionInverted) return android.graphics.Rect(0, 0, width, height)
+        val r = RectF()
+        path.computeBounds(r, true)
+        val out = android.graphics.Rect(
+            kotlin.math.floor(r.left).toInt().coerceIn(0, width),
+            kotlin.math.floor(r.top).toInt().coerceIn(0, height),
+            kotlin.math.ceil(r.right).toInt().coerceIn(0, width),
+            kotlin.math.ceil(r.bottom).toInt().coerceIn(0, height)
+        )
+        return if (out.width() > 0 && out.height() > 0) out else null
+    }
+
+    // Копия выделенного (или всего слоя) и её левый верхний угол на холсте.
+    fun copySelection(): Pair<Bitmap, Offset>? {
+        val layer = active ?: return null
+        if (busy) return null
+        val b = selectionBounds() ?: return null
+        val out = Bitmap.createBitmap(b.width(), b.height(), Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        c.translate(-b.left.toFloat(), -b.top.toFloat())
+        selectionPath()?.let { c.clipPath(it) }
+        c.drawBitmap(layer.bitmap, 0f, 0f, null)
+        return out to Offset(b.left.toFloat(), b.top.toFloat())
+    }
+
+    fun cutSelection(): Pair<Bitmap, Offset>? {
+        val copied = copySelection() ?: return null
+        clearActive()
+        return copied
+    }
+
+    // ---------- Трансформация ----------
+
+    var floating by mutableStateOf<FloatingPiece?>(null)
+        private set
+
+    // true — кусок пришёл из буфера или фото: отмена убирает и новый слой.
+    private var floatingIsPaste = false
+    private var savedSelection: List<Offset>? = null
+    private var savedInverted = false
+    private var pieceOrigin = Offset(0f, 0f)
+
+    // Поднимаем выделенное (или весь слой) в плавающий кусок.
+    fun beginTransform(): Boolean {
+        val layer = active ?: return false
+        if (busy) return false
+        val b = selectionBounds() ?: return false
+        pushPixels(layer)
+        val piece = Bitmap.createBitmap(b.width(), b.height(), Bitmap.Config.ARGB_8888)
+        val c = Canvas(piece)
+        c.translate(-b.left.toFloat(), -b.top.toFloat())
+        selectionPath()?.let { c.clipPath(it) }
+        c.drawBitmap(layer.bitmap, 0f, 0f, null)
+        layerCanvas(layer).drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+
+        val m = Matrix()
+        m.setTranslate(b.left.toFloat(), b.top.toFloat())
+        pieceOrigin = Offset(b.left.toFloat(), b.top.toFloat())
+        savedSelection = selection
+        savedInverted = selectionInverted
+        selection = null
+        floatingIsPaste = false
+        floating = FloatingPiece(piece, layer, m)
+        op = Op.TRANSFORM
+        touch()
+        settled()
+        return true
+    }
+
+    // Вставка картинки новым слоем сразу в режиме трансформации.
+    fun beginPaste(bitmap: Bitmap, placement: Matrix, name: String) {
+        if (busy) return
+        pushStructure()
+        val layer = Layer(nextId++, name, newBitmap())
+        val index = if (activeIndex in layers.indices) activeIndex + 1 else layers.size
+        layers.add(index, layer)
+        activeIndex = index
+        savedSelection = null
+        savedInverted = false
+        selection = null
+        floatingIsPaste = true
+        floating = FloatingPiece(bitmap, layer, Matrix(placement))
+        op = Op.TRANSFORM
+        touch()
+        settled()
+    }
+
+    fun transformBy(m: Matrix) {
+        val f = floating ?: return
+        f.matrix.postConcat(m)
+        touch()
+    }
+
+    // Центр куска на холсте — вокруг него крутим и отражаем.
+    fun floatingCenter(): Offset? {
+        val f = floating ?: return null
+        val pts = floatArrayOf(f.bitmap.width / 2f, f.bitmap.height / 2f)
+        f.matrix.mapPoints(pts)
+        return Offset(pts[0], pts[1])
+    }
+
+    fun rotateFloating(degrees: Float) {
+        val c = floatingCenter() ?: return
+        transformBy(Matrix().apply { setRotate(degrees, c.x, c.y) })
+    }
+
+    fun flipFloating(horizontal: Boolean) {
+        val c = floatingCenter() ?: return
+        transformBy(Matrix().apply {
+            if (horizontal) setScale(-1f, 1f, c.x, c.y) else setScale(1f, -1f, c.x, c.y)
+        })
+    }
+
+    fun applyTransform() {
+        val f = floating ?: return
+        Canvas(f.layer.bitmap).drawBitmap(f.bitmap, f.matrix, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+        // Выделение едет вместе с куском: точки холста -> точки куска -> новое место.
+        val sel = savedSelection
+        if (sel != null && !savedInverted) {
+            val arr = FloatArray(sel.size * 2)
+            sel.forEachIndexed { i, o ->
+                arr[i * 2] = o.x - pieceOrigin.x
+                arr[i * 2 + 1] = o.y - pieceOrigin.y
+            }
+            f.matrix.mapPoints(arr)
+            selection = sel.indices.map { Offset(arr[it * 2], arr[it * 2 + 1]) }
+            selectionInverted = false
+        }
+        floating = null
+        op = Op.NONE
+        touch()
+        settled()
+    }
+
+    fun cancelTransform() {
+        if (floating == null) return
+        floating = null
+        op = Op.NONE
+        undoStack.removeLastOrNull()?.let { applyEntry(it) }
+        selection = savedSelection
+        selectionInverted = savedInverted
+        touch()
+        settled()
+    }
+
+    // ---------- Фильтры ----------
+
+    // Цветовая коррекция активного слоя (внутри выделения).
+    fun applyColorMatrix(cm: ColorMatrix) {
+        val layer = active ?: return
+        if (busy) return
+        pushPixels(layer)
+        val src = copyOf(layer.bitmap)
+        val c = layerCanvas(layer)
+        c.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        c.drawBitmap(src, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(cm) })
+        src.recycle()
+        touch()
+        settled()
+    }
+
+    // Размытие: уменьшаем и снова увеличиваем картинку со сглаживанием.
+    fun blurActive(radius: Float) {
+        val layer = active ?: return
+        if (busy || radius < 2f) return
+        pushPixels(layer)
+        val src = layer.bitmap
+        var cur: Bitmap = Bitmap.createScaledBitmap(src, max(1, width / 2), max(1, height / 2), true)
+        var f = 2
+        while (f * 2 <= radius && f < 64) {
+            val next = Bitmap.createScaledBitmap(cur, max(1, cur.width / 2), max(1, cur.height / 2), true)
+            cur.recycle()
+            cur = next
+            f *= 2
+        }
+        while (cur.width * 2 <= width && cur.height * 2 <= height) {
+            val next = Bitmap.createScaledBitmap(cur, cur.width * 2, cur.height * 2, true)
+            cur.recycle()
+            cur = next
+        }
+        val blurred = Bitmap.createScaledBitmap(cur, width, height, true)
+        if (blurred !== cur) cur.recycle()
+        val c = layerCanvas(layer)
+        c.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        c.drawBitmap(blurred, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+        blurred.recycle()
+        touch()
+        settled()
+    }
+
     private companion object {
         const val MAX_HISTORY = 15
     }
@@ -610,3 +897,13 @@ private fun similar(a: Int, b: Int, tol: Int): Boolean =
         abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)) <= tol &&
         abs(((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)) <= tol &&
         abs((a and 0xFF) - (b and 0xFF)) <= tol
+
+private fun polygonArea(pts: List<Offset>): Float {
+    var a = 0f
+    for (i in pts.indices) {
+        val p = pts[i]
+        val q = pts[(i + 1) % pts.size]
+        a += p.x * q.y - q.x * p.y
+    }
+    return abs(a) / 2f
+}

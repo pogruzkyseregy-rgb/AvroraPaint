@@ -15,6 +15,13 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,7 +60,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.sqrt
 
-private enum class Sheet { NONE, TOOLS, COLOR, LAYERS }
+private enum class Sheet { NONE, TOOLS, COLOR, LAYERS, FILTERS }
 
 // Размер кисти: ползунок нелинейный, чтобы тонкие размеры было легко выставить.
 private const val MIN_SIZE = 1f
@@ -85,12 +92,31 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
         sheet = Sheet.NONE
     }
 
-    BackHandler {
-        if (sheet != Sheet.NONE) close() else onExit()
+    fun startTransform() {
+        sheet = Sheet.NONE
+        if (doc.beginTransform()) {
+            editor.flash("Один палец — сдвиг, два — масштаб и поворот")
+        } else {
+            editor.flash("Нечего трансформировать")
+        }
     }
 
-    // Приложение ушло в фон — сохраняем работу.
+    fun paste() {
+        sheet = Sheet.NONE
+        if (editor.paste(doc)) editor.flash("Вставлено — поставьте на место")
+    }
+
+    BackHandler {
+        when {
+            doc.floating != null -> doc.cancelTransform()
+            sheet != Sheet.NONE -> close()
+            else -> onExit()
+        }
+    }
+
+    // Приложение ушло в фон — завершаем трансформацию и сохраняем работу.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (doc.floating != null) doc.applyTransform()
         if (doc.dirty) scope.launch { ProjectStore.save(context, doc) }
     }
 
@@ -98,9 +124,10 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
         if (uri != null) {
             val bmp = decodeSampled(context, uri, max(doc.width, doc.height))
             if (bmp != null) {
+                sheet = Sheet.NONE
                 doc.importImage(bmp)
                 bmp.recycle()
-                editor.flash("Фото добавлено новым слоем")
+                editor.flash("Поставьте фото на место и нажмите «Готово»")
             } else {
                 Toast.makeText(context, "Не удалось открыть фото", Toast.LENGTH_SHORT).show()
             }
@@ -122,7 +149,10 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconBtn(Ico.BACK) { onExit() }
+                IconBtn(Ico.BACK) {
+                    if (doc.floating != null) doc.applyTransform()
+                    onExit()
+                }
                 Image(
                     painter = painterResource(R.drawable.avrora_logo),
                     contentDescription = "Avrora",
@@ -149,6 +179,24 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
                 Box {
                     IconBtn(Ico.MORE) { menuOpen = true }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (editor.hasClipboard) {
+                            MenuItem("Вставить", Ico.PASTE) {
+                                menuOpen = false
+                                paste()
+                            }
+                        }
+                        MenuItem("Выделить всё", Ico.SELECT_ALL) {
+                            menuOpen = false
+                            doc.selectAll()
+                        }
+                        MenuItem("Трансформировать слой", Ico.TRANSFORM) {
+                            menuOpen = false
+                            startTransform()
+                        }
+                        MenuItem("Эффекты и коррекция", Ico.FX) {
+                            menuOpen = false
+                            open(Sheet.FILTERS)
+                        }
                         MenuItem("Вписать холст в экран", Ico.FIT) {
                             menuOpen = false
                             view.fit(doc)
@@ -192,7 +240,7 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
 
                 // Ползунки размера и непрозрачности
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = sheet == Sheet.NONE,
+                    visible = sheet == Sheet.NONE && doc.floating == null,
                     modifier = Modifier.align(Alignment.CenterStart),
                     enter = fadeIn() + slideInHorizontally { -it },
                     exit = fadeOut() + slideOutHorizontally { -it }
@@ -217,7 +265,18 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
                     }
                 }
 
-                FlashMessage(editor, Modifier.align(Alignment.TopCenter).padding(top = 16.dp))
+                // Полоса действий с выделением
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = doc.floating == null && sheet == Sheet.NONE &&
+                        (doc.hasSelection || editor.tool.isSelect),
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    enter = fadeIn() + slideInVertically { -it },
+                    exit = fadeOut() + slideOutVertically { -it }
+                ) {
+                    SelectionBar(doc, editor, onTransform = { startTransform() }, onPaste = { paste() })
+                }
+
+                FlashMessage(editor, Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp))
 
                 // Выдвижные панели
                 androidx.compose.animation.AnimatedVisibility(
@@ -229,7 +288,13 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
                     val shown = if (sheet != Sheet.NONE) sheet else lastSheet
                     Box(Modifier.padding(horizontal = 6.dp)) {
                         when (shown) {
-                            Sheet.TOOLS -> ToolsSheet(editor) { close() }
+                            Sheet.TOOLS -> ToolsSheet(
+                                editor,
+                                onTransform = { startTransform() },
+                                onFilters = { open(Sheet.FILTERS) },
+                                onClose = { close() }
+                            )
+                            Sheet.FILTERS -> FiltersSheet(doc, editor) { close() }
                             Sheet.COLOR -> ColorSheet(editor) { close() }
                             Sheet.LAYERS -> LayersSheet(doc, editor, onImport = pickPhoto, onClose = { close() })
                             Sheet.NONE -> Unit
@@ -239,7 +304,9 @@ fun EditorScreen(doc: Document, editor: EditorState, onExit: () -> Unit) {
             }
 
             // ---------- Нижняя панель ----------
-            Row(
+            if (doc.floating != null) {
+                TransformBar(doc, editor)
+            } else Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp, vertical = 8.dp)
@@ -303,10 +370,10 @@ private fun UndoRedo(doc: Document, editor: EditorState) {
     // Обновляется только когда меняется история, а не на каждое движение пальца.
     @Suppress("UNUSED_VARIABLE")
     val version = doc.historyVersion
-    IconBtn(Ico.UNDO, enabled = doc.canUndo) {
+    IconBtn(Ico.UNDO, enabled = doc.canUndo && doc.floating == null) {
         if (doc.undo()) editor.flash("↶  Отмена")
     }
-    IconBtn(Ico.REDO, enabled = doc.canRedo) {
+    IconBtn(Ico.REDO, enabled = doc.canRedo && doc.floating == null) {
         if (doc.redo()) editor.flash("↷  Повтор")
     }
 }
@@ -336,7 +403,7 @@ private fun FlashMessage(editor: EditorState, modifier: Modifier = Modifier) {
     LaunchedEffect(editor.flashId) {
         if (editor.flashId > 0) {
             visible = true
-            delay(800)
+            delay(700L + editor.flashText.length * 30L)
             visible = false
         }
     }
@@ -369,4 +436,75 @@ private fun firstLaunch(context: Context): Boolean {
     val first = !prefs.getBoolean("help_shown_v2", false)
     if (first) prefs.edit().putBoolean("help_shown_v2", true).apply()
     return first
+}
+
+// Полоса действий с выделением над холстом.
+@Composable
+private fun SelectionBar(doc: Document, editor: EditorState, onTransform: () -> Unit, onPaste: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .glass(RoundedCornerShape(20.dp))
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (doc.hasSelection) {
+            ChipAction(Ico.COPY, "Копия") { if (editor.copy(doc)) editor.flash("Скопировано") }
+            ChipAction(Ico.CUT, "Вырезать") { if (editor.cut(doc)) editor.flash("Вырезано") }
+        }
+        if (editor.hasClipboard) {
+            ChipAction(Ico.PASTE, "Вставить") { onPaste() }
+        }
+        if (doc.hasSelection) {
+            ChipAction(Ico.TRANSFORM, "Двигать") { onTransform() }
+            ChipAction(Ico.FILL, "Залить") { doc.fillActive(editor.color.toArgb()) }
+            ChipAction(Ico.CLEAR, "Стереть") { doc.clearActive() }
+            ChipAction(Ico.INVERT, "Инверсия") { doc.invertSelection() }
+            ChipAction(Ico.DESELECT, "Снять") { doc.clearSelection() }
+        } else {
+            ChipAction(Ico.SELECT_ALL, "Всё") { doc.selectAll() }
+        }
+    }
+}
+
+@Composable
+private fun ChipAction(icon: Ico, label: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        AvIcon(icon, AvroraColors.Text, 20.dp)
+        Spacer(Modifier.height(2.dp))
+        Text(label, color = AvroraColors.Text.copy(alpha = 0.8f), fontSize = 10.sp, maxLines = 1)
+    }
+}
+
+// Нижняя панель в режиме трансформации.
+@Composable
+private fun TransformBar(doc: Document, editor: EditorState) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .glass(RoundedCornerShape(26.dp))
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BarItem(Ico.CLOSE, "Отмена", false, Modifier.weight(1f)) {
+            doc.cancelTransform()
+            editor.flash("Отменено")
+        }
+        BarItem(Ico.FLIP, "Зеркало", false, Modifier.weight(1f)) { doc.flipFloating(true) }
+        BarItem(Ico.FLIP_V, "Перевернуть", false, Modifier.weight(1f)) { doc.flipFloating(false) }
+        BarItem(Ico.ROTATE, "90°", false, Modifier.weight(1f)) { doc.rotateFloating(90f) }
+        BarItem(Ico.CHECK, "Готово", true, Modifier.weight(1f)) {
+            doc.applyTransform()
+            editor.flash("Готово")
+        }
+    }
 }
