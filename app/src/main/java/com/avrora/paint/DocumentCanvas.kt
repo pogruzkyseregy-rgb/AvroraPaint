@@ -18,10 +18,13 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -96,6 +99,18 @@ fun DocumentCanvas(
     onTouch: () -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
+    val selectionVersion = doc.selectionVersion
+    val outlinePath = remember(doc, selectionVersion) {
+        val seg = doc.selectionOutline
+        Path().apply {
+            var i = 0
+            while (i + 3 < seg.size) {
+                moveTo(seg[i], seg[i + 1])
+                lineTo(seg[i + 2], seg[i + 3])
+                i += 4
+            }
+        }
+    }
     val touchCallback by rememberUpdatedState(onTouch)
     Canvas(
         modifier = modifier
@@ -337,71 +352,76 @@ fun DocumentCanvas(
 
         // Точка холста -> точка экрана (отражение делает блок scale ниже).
         fun screen(o: Offset) = Offset(view.left + o.x * view.scale, view.top + o.y * view.scale)
-        fun polygon(points: List<Offset>, close: Boolean): Path {
-            val path = Path()
-            points.forEachIndexed { idx, o ->
-                val sp = screen(o)
-                if (idx == 0) path.moveTo(sp.x, sp.y) else path.lineTo(sp.x, sp.y)
-            }
-            if (close) path.close()
-            return path
-        }
 
-        val selection = doc.selection
-        val selectionScreen = selection?.let { polygon(it, true) }
+        val mask = doc.selectionMask
         val filterMatrix = if (editor.filterPreview && !editor.filter.isIdentity) {
             ColorFilter.colorMatrix(editor.filter.toComposeMatrix())
         } else {
             null
+        }
+        val paper = Rect(
+            dstOffset.x.toFloat(),
+            dstOffset.y.toFloat(),
+            (dstOffset.x + dstSize.width).toFloat(),
+            (dstOffset.y + dstSize.height).toFloat()
+        )
+
+        fun img(bmp: android.graphics.Bitmap, alpha: Float = 1f, blend: BlendMode = BlendMode.SrcOver, cf: ColorFilter? = null) {
+            drawImage(
+                image = bmp.asImageBitmap(),
+                srcOffset = IntOffset.Zero,
+                srcSize = srcSize,
+                dstOffset = dstOffset,
+                dstSize = dstSize,
+                alpha = alpha,
+                colorFilter = cf,
+                blendMode = blend,
+                filterQuality = quality
+            )
+        }
+
+        fun layerPaint(alpha: Float, blend: BlendMode) = Paint().apply {
+            this.alpha = alpha
+            blendMode = blend
         }
 
         scale(scaleX = if (view.flipped) -1f else 1f, scaleY = 1f, pivot = pivot) {
             drawRect(Color.White, topLeft = topLeft, size = Size(w, h))
             doc.layers.forEachIndexed { i, layer ->
                 val isActive = i == doc.activeIndex
+                val buffer = isActive && doc.bufferVisible
+                val filtering = isActive && filterMatrix != null
                 if (layer.visible) {
-                    val drawLayer = { cf: ColorFilter? ->
-                        drawImage(
-                            image = layer.bitmap.asImageBitmap(),
-                            srcOffset = IntOffset.Zero,
-                            srcSize = srcSize,
-                            dstOffset = dstOffset,
-                            dstSize = dstSize,
-                            alpha = layer.opacity,
-                            colorFilter = cf,
-                            blendMode = layer.blend.composeMode(),
-                            filterQuality = quality
-                        )
-                    }
-                    if (isActive && filterMatrix != null && selectionScreen != null) {
-                        // Фильтр виден только внутри выделения — как и при применении.
-                        val inside = if (doc.selectionInverted) ClipOp.Difference else ClipOp.Intersect
-                        val outside = if (doc.selectionInverted) ClipOp.Intersect else ClipOp.Difference
-                        clipPath(selectionScreen, clipOp = outside) { drawLayer(null) }
-                        clipPath(selectionScreen, clipOp = inside) { drawLayer(filterMatrix) }
+                    if (!buffer && !filtering) {
+                        img(layer.bitmap, layer.opacity, layer.blend.composeMode())
                     } else {
-                        drawLayer(if (isActive) filterMatrix else null)
-                    }
-                }
-                if (isActive && doc.bufferVisible) {
-                    val drawBuffer = {
-                        drawImage(
-                            image = doc.strokeBuffer.asImageBitmap(),
-                            srcOffset = IntOffset.Zero,
-                            srcSize = srcSize,
-                            dstOffset = dstOffset,
-                            dstSize = dstSize,
-                            alpha = (doc.bufferAlpha * layer.opacity).coerceIn(0f, 1f),
-                            filterQuality = quality
-                        )
-                    }
-                    if (selectionScreen != null) {
-                        clipPath(
-                            selectionScreen,
-                            clipOp = if (doc.selectionInverted) ClipOp.Difference else ClipOp.Intersect
-                        ) { drawBuffer() }
-                    } else {
-                        drawBuffer()
+                        // Активный слой собираем в отдельном слое, чтобы предпросмотр
+                        // ластика, защиты прозрачности и фильтра совпадал с результатом.
+                        drawIntoCanvas { it.saveLayer(paper, layerPaint(layer.opacity, layer.blend.composeMode())) }
+                        if (filtering && mask != null) {
+                            drawIntoCanvas { it.saveLayer(paper, Paint()) }
+                            img(layer.bitmap)
+                            img(mask, blend = BlendMode.DstOut)
+                            drawIntoCanvas { it.restore() }
+                            drawIntoCanvas { it.saveLayer(paper, layerPaint(1f, BlendMode.Plus)) }
+                            img(layer.bitmap, cf = filterMatrix)
+                            img(mask, blend = BlendMode.DstIn)
+                            drawIntoCanvas { it.restore() }
+                        } else {
+                            img(layer.bitmap, cf = if (filtering) filterMatrix else null)
+                        }
+                        if (buffer) {
+                            val mode = when {
+                                doc.bufferIsEraser -> BlendMode.DstOut
+                                layer.alphaLock -> BlendMode.SrcAtop
+                                else -> BlendMode.SrcOver
+                            }
+                            drawIntoCanvas { it.saveLayer(paper, layerPaint(doc.bufferAlpha, mode)) }
+                            img(doc.strokeBuffer)
+                            if (mask != null) img(mask, blend = BlendMode.DstIn)
+                            drawIntoCanvas { it.restore() }
+                        }
+                        drawIntoCanvas { it.restore() }
                     }
                 }
                 val f = doc.floating
@@ -437,23 +457,32 @@ fun DocumentCanvas(
                 }
             }
 
-            // Контур выделения: белая линия и чёрный пунктир поверх.
-            val outline = selectionScreen ?: doc.selectionDraft.takeIf { it.size >= 2 }?.let {
-                polygon(it, editor.tool == Tool.SELECT_RECT)
-            }
-            if (outline != null) {
-                val dash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))
-                drawPath(outline, Color.White, style = Stroke(width = 1.5.dp.toPx()))
-                drawPath(outline, Color.Black, style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash))
-                if (selectionScreen != null && doc.selectionInverted) {
-                    drawRect(Color.White, topLeft = topLeft, size = Size(w, h), style = Stroke(width = 1.5.dp.toPx()))
-                    drawRect(
-                        Color.Black,
-                        topLeft = topLeft,
-                        size = Size(w, h),
-                        style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash)
-                    )
+            // Выделенная область чуть подсвечена, по краю — двойной контур.
+            if (mask != null && doc.floating == null) {
+                img(mask, alpha = 0.13f, cf = ColorFilter.tint(AvroraColors.Fluorite, BlendMode.SrcIn))
+                withTransform({
+                    translate(view.left, view.top)
+                    scale(view.scale, view.scale, pivot = Offset.Zero)
+                }) {
+                    drawPath(outlinePath, Color.Black, style = Stroke(width = 3.dp.toPx() / view.scale))
+                    drawPath(outlinePath, Color.White, style = Stroke(width = 1.3.dp.toPx() / view.scale))
                 }
+            }
+
+            // Рамка или лассо, которые рисуют прямо сейчас.
+            val draft = doc.selectionDraft
+            if (draft.size >= 2) {
+                val path = Path()
+                draft.forEachIndexed { idx, o ->
+                    val sp = screen(o)
+                    if (idx == 0) path.moveTo(sp.x, sp.y) else path.lineTo(sp.x, sp.y)
+                }
+                path.close()
+                val dash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))
+                val tint = if (editor.selectMode == SelectMode.SUBTRACT) AvroraColors.Pink else AvroraColors.Fluorite
+                drawPath(path, tint.copy(alpha = 0.15f))
+                drawPath(path, Color.White, style = Stroke(width = 1.5.dp.toPx()))
+                drawPath(path, Color.Black, style = Stroke(width = 1.5.dp.toPx(), pathEffect = dash))
             }
         }
 

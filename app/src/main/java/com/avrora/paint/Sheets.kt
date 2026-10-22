@@ -68,6 +68,7 @@ private fun Tool.hint(): String = when (this) {
     Tool.OVAL -> "Тяните от одного угла до другого"
     Tool.SELECT_RECT -> "Тяните рамку. Потом можно копировать, вырезать и двигать"
     Tool.SELECT_LASSO -> "Обведите пальцем нужную часть рисунка"
+    Tool.SELECT_WAND -> "Коснитесь цвета — выделится всё такое же"
 }
 
 // Общая рамка выдвижной панели: ручка, заголовок, кнопка закрытия.
@@ -140,8 +141,17 @@ fun ToolsSheet(editor: EditorState, onTransform: () -> Unit, onFilters: () -> Un
         ) {
             ToolTile(Tool.SELECT_RECT, editor.tool == Tool.SELECT_RECT, Modifier.weight(1f)) { editor.selectTool(Tool.SELECT_RECT) }
             ToolTile(Tool.SELECT_LASSO, editor.tool == Tool.SELECT_LASSO, Modifier.weight(1f)) { editor.selectTool(Tool.SELECT_LASSO) }
+            ToolTile(Tool.SELECT_WAND, editor.tool == Tool.SELECT_WAND, Modifier.weight(1f)) { editor.selectTool(Tool.SELECT_WAND) }
+            Spacer(Modifier.weight(1f))
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+        ) {
             ActionTile(Ico.TRANSFORM, "Трансформ", Modifier.weight(1f), onTransform)
             ActionTile(Ico.FX, "Эффекты", Modifier.weight(1f), onFilters)
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))
         }
 
         val tool = editor.tool
@@ -167,6 +177,28 @@ fun ToolsSheet(editor: EditorState, onTransform: () -> Unit, onFilters: () -> Un
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Залитая фигура", color = AvroraColors.Text, modifier = Modifier.weight(1f))
                     Switch(checked = editor.shapeFill, onCheckedChange = { editor.shapeFill = it })
+                }
+            }
+            if (tool.isSelect) {
+                SectionLabel("НОВОЕ ВЫДЕЛЕНИЕ")
+                SelectModeRow(editor)
+            }
+            if (tool == Tool.SELECT_WAND) {
+                SectionLabel("ПОХОЖЕСТЬ ЦВЕТА · ${editor.wandTolerance.toInt()}")
+                Slider(value = editor.wandTolerance, onValueChange = { editor.wandTolerance = it }, valueRange = 0f..128f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Только связанная область", color = AvroraColors.Text, fontSize = 13.sp)
+                        Text("выкл — этот цвет по всему холсту", color = AvroraColors.Text.copy(alpha = 0.55f), fontSize = 10.sp)
+                    }
+                    Switch(checked = editor.wandContiguous, onCheckedChange = { editor.wandContiguous = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("По всем слоям", color = AvroraColors.Text, fontSize = 13.sp)
+                        Text("выкл — только по активному слою", color = AvroraColors.Text.copy(alpha = 0.55f), fontSize = 10.sp)
+                    }
+                    Switch(checked = editor.wandAllLayers, onCheckedChange = { editor.wandAllLayers = it })
                 }
             }
             if (tool == Tool.FILL) {
@@ -518,4 +550,24 @@ private fun FilterSlider(
         Text(value, color = AvroraColors.Fluorite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
     Slider(value = current, onValueChange = onChange, valueRange = range)
+}
+
+// Как сочетать новое выделение со старым: добавить, убрать или заменить.
+@Composable
+fun SelectModeRow(editor: EditorState) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        SelectMode.values().forEach { mode ->
+            val icon = when (mode) {
+                SelectMode.ADD -> Ico.SEL_ADD
+                SelectMode.SUBTRACT -> Ico.SEL_SUB
+                SelectMode.REPLACE -> Ico.SEL_NEW
+            }
+            FilterChip(
+                selected = editor.selectMode == mode,
+                onClick = { editor.selectMode = mode },
+                label = { Text(mode.label) },
+                leadingIcon = { AvIcon(icon, AvroraColors.Text, 18.dp) }
+            )
+        }
+    }
 }

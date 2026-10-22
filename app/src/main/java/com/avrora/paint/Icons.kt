@@ -23,7 +23,7 @@ enum class Ico {
     PEN, SOFT, AIRBRUSH, MARKER, ERASER, FILL, GRADIENT, PICKER, LINE, RECT, OVAL,
     LAYERS, EYE, EYE_OFF, COPY, MERGE, UP, DOWN, PHOTO, TRASH, CLEAR, LOCK,
     FLIP, FIT, SAVE, EXPORT, HELP,
-    SELECT_RECT, LASSO, TRANSFORM, CUT, PASTE, FX, INVERT, SELECT_ALL, DESELECT, ROTATE, FLIP_V, CHECK
+    SELECT_RECT, LASSO, WAND, SEL_ADD, SEL_SUB, SEL_NEW, TRANSFORM, CUT, PASTE, FX, INVERT, SELECT_ALL, DESELECT, ROTATE, FLIP_V, CHECK
 }
 
 fun Tool.icon(): Ico = when (this) {
@@ -40,6 +40,7 @@ fun Tool.icon(): Ico = when (this) {
     Tool.OVAL -> Ico.OVAL
     Tool.SELECT_RECT -> Ico.SELECT_RECT
     Tool.SELECT_LASSO -> Ico.LASSO
+    Tool.SELECT_WAND -> Ico.WAND
 }
 
 @Composable
@@ -292,6 +293,25 @@ fun DrawScope.drawIco(icon: Ico, tint: Color) {
                     c(7f, 17f, 9f, 19f, 7f, 21f)
                 }
                 circle(7f, 21f, 1.2f, fill = true)
+            }
+            Ico.WAND -> {
+                line(4f, 20f, 15f, 9f, 2.4f)
+                poly(17f, 2f, 18f, 5f, 21f, 6f, 18f, 7f, 17f, 10f, 16f, 7f, 13f, 6f, 16f, 5f, close = true, fill = true)
+                circle(20f, 12f, 1f, fill = true)
+                circle(11f, 4f, 1f, fill = true)
+            }
+            Ico.SEL_ADD -> {
+                rect(3f, 7f, 15f, 19f)
+                line(18f, 3f, 18f, 11f)
+                line(14f, 7f, 22f, 7f)
+            }
+            Ico.SEL_SUB -> {
+                rect(3f, 7f, 15f, 19f)
+                line(14f, 7f, 22f, 7f)
+            }
+            Ico.SEL_NEW -> {
+                rect(5f, 5f, 19f, 19f)
+                circle(12f, 12f, 2f, fill = true)
             }
             Ico.TRANSFORM -> {
                 rect(6f, 6f, 18f, 18f)

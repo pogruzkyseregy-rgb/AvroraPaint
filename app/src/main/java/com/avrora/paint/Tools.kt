@@ -17,7 +17,8 @@ enum class Tool(val label: String, val caption: String) {
     RECT("Прямоуг.", "прямоугольник"),
     OVAL("Овал", "эллипс"),
     SELECT_RECT("Рамка", "выделить прямоугольник"),
-    SELECT_LASSO("Лассо", "выделить от руки");
+    SELECT_LASSO("Лассо", "выделить от руки"),
+    SELECT_WAND("Палочка", "выделить одинаковое");
 
     val isBrush: Boolean
         get() = this == PEN || this == SOFT || this == AIRBRUSH || this == MARKER || this == ERASER
@@ -26,7 +27,14 @@ enum class Tool(val label: String, val caption: String) {
         get() = this == LINE || this == RECT || this == OVAL
 
     val isSelect: Boolean
-        get() = this == SELECT_RECT || this == SELECT_LASSO
+        get() = this == SELECT_RECT || this == SELECT_LASSO || this == SELECT_WAND
+}
+
+// Как новое выделение сочетается со старым.
+enum class SelectMode(val label: String) {
+    ADD("Добавить"),
+    SUBTRACT("Убрать"),
+    REPLACE("Новое")
 }
 
 // Режимы наложения слоёв.

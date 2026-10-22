@@ -15,6 +15,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -449,6 +450,14 @@ private fun SelectionBar(doc: Document, editor: EditorState, onTransform: () -> 
             .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
+        // Режим: новые участки добавляются, вычитаются или заменяют старые.
+        ModeChip(Ico.SEL_ADD, "Добавить", editor.selectMode == SelectMode.ADD) { editor.selectMode = SelectMode.ADD }
+        ModeChip(Ico.SEL_SUB, "Убрать", editor.selectMode == SelectMode.SUBTRACT) { editor.selectMode = SelectMode.SUBTRACT }
+        ModeChip(Ico.SEL_NEW, "Новое", editor.selectMode == SelectMode.REPLACE) { editor.selectMode = SelectMode.REPLACE }
+        if (editor.tool != Tool.SELECT_WAND) {
+            ChipAction(Ico.WAND, "Палочка") { editor.selectTool(Tool.SELECT_WAND) }
+        }
+        UndoChip(doc)
         if (doc.hasSelection) {
             ChipAction(Ico.COPY, "Копия") { if (editor.copy(doc)) editor.flash("Скопировано") }
             ChipAction(Ico.CUT, "Вырезать") { if (editor.cut(doc)) editor.flash("Вырезано") }
@@ -465,6 +474,34 @@ private fun SelectionBar(doc: Document, editor: EditorState, onTransform: () -> 
         } else {
             ChipAction(Ico.SELECT_ALL, "Всё") { doc.selectAll() }
         }
+    }
+}
+
+// Переключатель режима выделения: выбранный подсвечен.
+@Composable
+private fun ModeChip(icon: Ico, label: String, selected: Boolean, onClick: () -> Unit) {
+    val tint = if (selected) AvroraColors.Fluorite else AvroraColors.Text.copy(alpha = 0.7f)
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) ActiveFill else androidx.compose.ui.graphics.SolidColor(androidx.compose.ui.graphics.Color.Transparent))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        AvIcon(icon, tint, 20.dp)
+        Spacer(Modifier.height(2.dp))
+        Text(label, color = tint, fontSize = 10.sp, maxLines = 1)
+    }
+}
+
+// Отмена прямо из полосы выделения (обновляется вместе с историей).
+@Composable
+private fun UndoChip(doc: Document) {
+    @Suppress("UNUSED_VARIABLE")
+    val version = doc.historyVersion
+    if (doc.canUndo) {
+        ChipAction(Ico.UNDO, "Назад") { doc.undo() }
     }
 }
 

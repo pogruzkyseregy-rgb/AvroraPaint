@@ -56,6 +56,12 @@ class EditorState {
 
     private var selStart = Offset(0f, 0f)
 
+    // Выделение: по умолчанию новые участки добавляются к старым.
+    var selectMode by mutableStateOf(SelectMode.ADD)
+    var wandTolerance by mutableFloatStateOf(24f)
+    var wandContiguous by mutableStateOf(true)
+    var wandAllLayers by mutableStateOf(true)
+
     fun copy(doc: Document): Boolean {
         val (bmp, origin) = doc.copySelection() ?: return false
         setClipboard(bmp, origin)
@@ -105,7 +111,7 @@ class EditorState {
         }
 
     val drawsOnDrag: Boolean
-        get() = tool != Tool.FILL && tool != Tool.PICKER
+        get() = tool != Tool.FILL && tool != Tool.PICKER && tool != Tool.SELECT_WAND
 
     fun selectTool(t: Tool) {
         tool = t
@@ -150,7 +156,7 @@ class EditorState {
 
     fun end(doc: Document) {
         if (tool.isSelect) {
-            doc.commitDraft()
+            doc.commitDraft(selectMode)
             return
         }
         if (!doc.busy) return
@@ -173,7 +179,9 @@ class EditorState {
                 if (doc.floodFill(p.x, p.y, color.toArgb(), opacity, fillTolerance.toInt())) pushRecent(color)
             }
             tool == Tool.PICKER -> pickAt(doc, p)
-            tool.isSelect -> doc.clearSelection()
+            tool == Tool.SELECT_WAND -> doc.magicWand(
+                p.x, p.y, selectMode, wandTolerance.toInt(), wandContiguous, wandAllLayers
+            )
             else -> Unit
         }
     }
