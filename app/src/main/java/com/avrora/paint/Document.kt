@@ -85,9 +85,19 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
     val canRedo: Boolean get() = redoStack.isNotEmpty()
     val busy: Boolean get() = op != Op.NONE
 
+    // Меняется только когда завершено действие или изменилась история.
+    // Кнопки и панели следят за ним, а не за revision, чтобы не
+    // перерисовываться на каждое движение пальца.
+    var historyVersion by mutableIntStateOf(0)
+        private set
+
     fun touch() {
         dirty = true
         revision++
+    }
+
+    private fun settled() {
+        historyVersion++
     }
 
     private fun newBitmap(): Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -100,6 +110,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         undoStack.addLast(entry)
         while (undoStack.size > MAX_HISTORY) undoStack.removeFirst()
         redoStack.clear()
+        settled()
     }
 
     private fun pushPixels(layer: Layer) {
@@ -131,6 +142,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         val e = undoStack.removeLastOrNull() ?: return false
         redoStack.addLast(applyEntry(e))
         touch()
+        settled()
         return true
     }
 
@@ -139,6 +151,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         val e = redoStack.removeLastOrNull() ?: return false
         undoStack.addLast(applyEntry(e))
         touch()
+        settled()
         return true
     }
 
@@ -380,6 +393,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         op = Op.NONE
         bufferVisible = false
         touch()
+        settled()
     }
 
     // Отменяем начатое действие так, будто его не было.
@@ -390,6 +404,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         op = Op.NONE
         bufferVisible = false
         touch()
+        settled()
     }
 
     private fun beginBuffer(strength: Float) {
@@ -491,6 +506,7 @@ class Document(val width: Int, val height: Int, val id: String = UUID.randomUUID
         commitBuffer(layer)
         bufferVisible = false
         touch()
+        settled()
         return true
     }
 

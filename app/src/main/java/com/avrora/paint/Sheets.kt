@@ -1,28 +1,33 @@
 package com.avrora.paint
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,9 +35,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,52 +54,139 @@ val Palette = listOf(
     AvroraColors.Pink, Color(0xFF7A4B2A), Color(0xFFF2C6A8), Color(0xFF2A1450)
 )
 
-// ---------- Инструменты ----------
+private fun Tool.hint(): String = when (this) {
+    Tool.PEN -> "Чёткая линия с ровным краем"
+    Tool.SOFT -> "Мягкий размытый край — для теней и света"
+    Tool.AIRBRUSH -> "Цвет набирается, пока ведёте по одному месту"
+    Tool.MARKER -> "Полупрозрачный штрих с прямым концом"
+    Tool.ERASER -> "Стирает до прозрачности. Размер — свой, отдельно от кисти"
+    Tool.FILL -> "Коснитесь замкнутой области, чтобы залить её"
+    Tool.GRADIENT -> "Проведите пальцем: от цвета 1 к цвету 2"
+    Tool.PICKER -> "Коснитесь или ведите по холсту, чтобы взять цвет"
+    Tool.LINE -> "Тяните от начала до конца линии"
+    Tool.RECT -> "Тяните от одного угла до другого"
+    Tool.OVAL -> "Тяните от одного угла до другого"
+}
 
+// Общая рамка выдвижной панели: ручка, заголовок, кнопка закрытия.
+// Смахните ручку вниз или нажмите ✕, чтобы закрыть.
 @Composable
-fun ToolsSheet(editor: EditorState) {
+fun SheetContainer(title: String, onClose: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp)
+            .heightIn(max = 460.dp)
+            .glass(shape, alpha = 0.96f)
     ) {
-        SheetTitle("ИНСТРУМЕНТЫ")
-        Tool.values().toList().chunked(3).forEach { row ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
-            ) {
-                row.forEach { t ->
-                    HudTile(t.label, t.caption, editor.tool == t, { editor.selectTool(t) }, Modifier.weight(1f))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    var total = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { total = 0f },
+                        onVerticalDrag = { change, dy ->
+                            total += dy
+                            change.consume()
+                            if (total > 60f) {
+                                total = Float.NEGATIVE_INFINITY
+                                onClose()
+                            }
+                        }
+                    )
                 }
-                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                .padding(top = 8.dp, start = 16.dp, end = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                Modifier
+                    .size(width = 40.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(AvroraColors.Text.copy(alpha = 0.3f))
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.weight(1f)) { SheetTitle(title) }
+                IconBtn(Ico.CLOSE) { onClose() }
             }
         }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+            content = content
+        )
+    }
+}
+
+// ---------- Инструменты ----------
+
+@Composable
+fun ToolsSheet(editor: EditorState, onClose: () -> Unit) {
+    SheetContainer("ИНСТРУМЕНТЫ", onClose) {
+        ToolGroup("КИСТИ", listOf(Tool.PEN, Tool.SOFT, Tool.AIRBRUSH, Tool.MARKER, Tool.ERASER), editor)
+        ToolGroup("ЦВЕТ И ЗАЛИВКА", listOf(Tool.FILL, Tool.GRADIENT, Tool.PICKER), editor)
+        ToolGroup("ФИГУРЫ", listOf(Tool.LINE, Tool.RECT, Tool.OVAL), editor)
 
         val tool = editor.tool
-        if (tool.isBrush) {
-            SectionLabel("СГЛАЖИВАНИЕ ЛИНИИ: ${(editor.smoothing * 100).toInt()}%")
-            Slider(value = editor.smoothing, onValueChange = { editor.smoothing = it }, valueRange = 0f..0.9f)
-        }
-        if (tool == Tool.RECT || tool == Tool.OVAL) {
+        Spacer(Modifier.height(12.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .glass(RoundedCornerShape(16.dp), alpha = 0.6f)
+                .padding(12.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Залитая фигура", color = AvroraColors.Text, modifier = Modifier.weight(1f))
-                Switch(checked = editor.shapeFill, onCheckedChange = { editor.shapeFill = it })
+                AvIcon(tool.icon(), AvroraColors.Fluorite, 22.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(tool.label, color = AvroraColors.Text, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Text(tool.hint(), color = AvroraColors.Text.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+
+            if (tool.isBrush) {
+                SectionLabel("СГЛАЖИВАНИЕ ЛИНИИ · ${(editor.smoothing * 100).toInt()}%")
+                Slider(value = editor.smoothing, onValueChange = { editor.smoothing = it }, valueRange = 0f..0.9f)
+            }
+            if (tool == Tool.RECT || tool == Tool.OVAL) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Залитая фигура", color = AvroraColors.Text, modifier = Modifier.weight(1f))
+                    Switch(checked = editor.shapeFill, onCheckedChange = { editor.shapeFill = it })
+                }
+            }
+            if (tool == Tool.FILL) {
+                SectionLabel("ДОПУСК ЗАЛИВКИ · ${editor.fillTolerance.toInt()}")
+                Slider(value = editor.fillTolerance, onValueChange = { editor.fillTolerance = it }, valueRange = 0f..128f)
+            }
+            if (tool == Tool.GRADIENT) {
+                SectionLabel("ВТОРОЙ ЦВЕТ")
+                SwatchRow(Palette, editor.secondColor) { editor.secondColor = it }
+                Spacer(Modifier.height(6.dp))
+                SmallAction("Поменять цвета местами", Ico.FLIP) {
+                    val c = editor.color
+                    editor.color = editor.secondColor
+                    editor.secondColor = c
+                }
             }
         }
-        if (tool == Tool.FILL) {
-            SectionLabel("ДОПУСК ЗАЛИВКИ: ${editor.fillTolerance.toInt()}")
-            Slider(value = editor.fillTolerance, onValueChange = { editor.fillTolerance = it }, valueRange = 0f..128f)
-        }
-        if (tool == Tool.GRADIENT) {
-            SectionLabel("ВТОРОЙ ЦВЕТ ГРАДИЕНТА")
-            SwatchRow(Palette, editor.secondColor) { editor.secondColor = it }
-            TextButton(onClick = {
-                val c = editor.color
-                editor.color = editor.secondColor
-                editor.secondColor = c
-            }) { Text("⇄ Поменять цвета местами", color = AvroraColors.Fluorite) }
+    }
+}
+
+@Composable
+private fun ToolGroup(title: String, tools: List<Tool>, editor: EditorState) {
+    SectionLabel(title)
+    tools.chunked(4).forEach { row ->
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+        ) {
+            row.forEach { t ->
+                ToolTile(t, editor.tool == t, Modifier.weight(1f)) { editor.selectTool(t) }
+            }
+            repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
@@ -98,36 +194,43 @@ fun ToolsSheet(editor: EditorState) {
 // ---------- Цвет ----------
 
 @Composable
-fun ColorSheet(editor: EditorState) {
+fun ColorSheet(editor: EditorState, onClose: () -> Unit) {
     var editSecond by remember { mutableStateOf(false) }
     val second = editSecond && editor.tool == Tool.GRADIENT
     val current = if (second) editor.secondColor else editor.color
     val set: (Color) -> Unit = { if (second) editor.secondColor = it else editor.color = it }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SheetTitle("ЦВЕТ")
-            Spacer(Modifier.weight(1f))
+    SheetContainer("ЦВЕТ", onClose) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 10.dp)) {
+            Box(
+                Modifier
+                    .size(width = 64.dp, height = 36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(current)
+                    .border(1.dp, GlassBorder, RoundedCornerShape(10.dp))
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 String.format("#%06X", current.toArgb() and 0xFFFFFF),
                 color = AvroraColors.Text,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(end = 8.dp)
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
             )
-            Box(Modifier.size(width = 44.dp, height = 24.dp).background(current).border(1.dp, AvroraColors.Text))
+            SmallAction("Пипетка", Ico.PICKER) {
+                editor.selectTool(Tool.PICKER)
+                onClose()
+            }
         }
         if (editor.tool == Tool.GRADIENT) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 8.dp)) {
                 FilterChip(selected = !second, onClick = { editSecond = false }, label = { Text("Цвет 1") })
                 FilterChip(selected = second, onClick = { editSecond = true }, label = { Text("Цвет 2") })
             }
         }
-        HsvPicker(current, set)
+        Box(Modifier.clip(RoundedCornerShape(14.dp))) {
+            HsvPicker(current, set)
+        }
         if (editor.recent.isNotEmpty()) {
             SectionLabel("НЕДАВНИЕ")
             SwatchRow(editor.recent.toList(), current, set)
@@ -135,80 +238,31 @@ fun ColorSheet(editor: EditorState) {
         SectionLabel("ПАЛИТРА АВРОРЫ")
         SwatchRow(Palette.take(8), current, set)
         SwatchRow(Palette.drop(8), current, set)
-        Spacer(Modifier.height(6.dp))
-        SmallAction("ПИПЕТКА") { editor.selectTool(Tool.PICKER) }
     }
 }
 
 // ---------- Слои ----------
 
 @Composable
-fun LayersSheet(doc: Document, editor: EditorState, onImport: () -> Unit) {
-    // Читаем счётчик, чтобы миниатюры обновлялись.
+fun LayersSheet(doc: Document, editor: EditorState, onImport: () -> Unit, onClose: () -> Unit) {
+    // Миниатюры обновляются после каждого завершённого действия.
     @Suppress("UNUSED_VARIABLE")
-    val rev = doc.revision
+    val version = doc.historyVersion
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp)
-    ) {
-        SheetTitle("СЛОИ")
+    SheetContainer("СЛОИ", onClose) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.horizontalScroll(rememberScrollState())
         ) {
-            SmallAction("+ НОВЫЙ") { doc.addLayer() }
-            SmallAction("КОПИЯ") { doc.duplicateActive() }
-            SmallAction("ОБЪЕДИНИТЬ ↓") { doc.mergeDown() }
-            SmallAction("▲") { doc.moveActive(1) }
-            SmallAction("▼") { doc.moveActive(-1) }
-            SmallAction("ФОТО") { onImport() }
-            SmallAction("ЗАЛИТЬ") { doc.fillActive(editor.color.toArgb()) }
-            SmallAction("ОЧИСТИТЬ") { doc.clearActive() }
-            SmallAction("УДАЛИТЬ", danger = true) { doc.removeActive() }
+            SmallAction("Новый", Ico.PLUS) { doc.addLayer() }
+            SmallAction("Фото", Ico.PHOTO) { onImport() }
+            SmallAction("Копия", Ico.COPY) { doc.duplicateActive() }
+            SmallAction("Объединить", Ico.MERGE) { doc.mergeDown() }
+            SmallAction("Выше", Ico.UP) { doc.moveActive(1) }
+            SmallAction("Ниже", Ico.DOWN) { doc.moveActive(-1) }
         }
 
-        doc.active?.let { layer ->
-            SectionLabel("НЕПРОЗРАЧНОСТЬ СЛОЯ: ${(layer.opacity * 100).toInt()}%")
-            Slider(
-                value = layer.opacity,
-                onValueChange = {
-                    layer.opacity = it
-                    doc.touch()
-                },
-                valueRange = 0f..1f
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Защита прозрачности", color = AvroraColors.Text, fontSize = 13.sp)
-                    Text("рисовать только поверх нарисованного", color = AvroraColors.Violet, fontSize = 10.sp)
-                }
-                Switch(checked = layer.alphaLock, onCheckedChange = {
-                    layer.alphaLock = it
-                    doc.touch()
-                })
-            }
-            SectionLabel(if (blendModesSupported) "РЕЖИМ НАЛОЖЕНИЯ" else "РЕЖИМ НАЛОЖЕНИЯ (нужен Android 10+)")
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState())
-            ) {
-                LayerBlend.values().forEach { mode ->
-                    FilterChip(
-                        selected = layer.blend == mode,
-                        onClick = {
-                            layer.blend = mode
-                            doc.touch()
-                        },
-                        label = { Text(mode.label) }
-                    )
-                }
-            }
-        }
-
-        SectionLabel("СТЕК СЛОЁВ")
+        Spacer(Modifier.height(10.dp))
         for (i in doc.layers.indices.reversed()) {
             val layer = doc.layers[i]
             LayerRow(
@@ -221,22 +275,87 @@ fun LayersSheet(doc: Document, editor: EditorState, onImport: () -> Unit) {
                 }
             )
         }
+
+        doc.active?.let { layer ->
+            SectionLabel("АКТИВНЫЙ СЛОЙ · ${layer.name.uppercase()}")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .glass(RoundedCornerShape(16.dp), alpha = 0.6f)
+                    .padding(12.dp)
+            ) {
+                Text("Непрозрачность · ${(layer.opacity * 100).toInt()}%", color = AvroraColors.Text, fontSize = 13.sp)
+                Slider(
+                    value = layer.opacity,
+                    onValueChange = {
+                        layer.opacity = it
+                        doc.touch()
+                    },
+                    valueRange = 0f..1f
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AvIcon(Ico.LOCK, AvroraColors.Violet, 20.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Защита прозрачности", color = AvroraColors.Text, fontSize = 13.sp)
+                        Text("рисовать только поверх нарисованного", color = AvroraColors.Text.copy(alpha = 0.55f), fontSize = 10.sp)
+                    }
+                    Switch(checked = layer.alphaLock, onCheckedChange = {
+                        layer.alphaLock = it
+                        doc.touch()
+                    })
+                }
+                Text(
+                    if (blendModesSupported) "Режим наложения" else "Режим наложения (нужен Android 10+)",
+                    color = AvroraColors.Text,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp)
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
+                    LayerBlend.values().forEach { mode ->
+                        FilterChip(
+                            selected = layer.blend == mode,
+                            onClick = {
+                                layer.blend = mode
+                                doc.touch()
+                            },
+                            label = { Text(mode.label) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
+                    SmallAction("Залить цветом", Ico.FILL) { doc.fillActive(editor.color.toArgb()) }
+                    SmallAction("Очистить", Ico.CLEAR) { doc.clearActive() }
+                    SmallAction("Удалить", Ico.TRASH, danger = true) { doc.removeActive() }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun LayerRow(layer: Layer, active: Boolean, onSelect: () -> Unit, onToggle: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 3.dp)
-            .background(if (active) AvroraColors.Violet.copy(alpha = 0.35f) else AvroraColors.Black)
-            .border(1.dp, if (active) AvroraColors.Fluorite else AvroraColors.Panel)
+            .clip(shape)
+            .background(if (active) AvroraColors.Violet.copy(alpha = 0.28f) else AvroraColors.Black.copy(alpha = 0.5f))
+            .border(1.dp, if (active) AccentBorder else GlassBorder, shape)
             .clickable(onClick = onSelect)
-            .padding(6.dp),
+            .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(52.dp).background(Color.White)) {
+        Box(Modifier.size(54.dp).clip(RoundedCornerShape(8.dp))) {
+            Checker(Modifier.fillMaxSize())
             Image(
                 bitmap = layer.bitmap.asImageBitmap(),
                 contentDescription = null,
@@ -244,25 +363,46 @@ private fun LayerRow(layer: Layer, active: Boolean, onSelect: () -> Unit, onTogg
                 modifier = Modifier.fillMaxSize()
             )
         }
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(layer.name, color = AvroraColors.Text, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(layer.name, color = AvroraColors.Text, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             val lock = if (layer.alphaLock) " · защита" else ""
             Text(
                 "${(layer.opacity * 100).toInt()}% · ${layer.blend.label}$lock",
-                color = AvroraColors.Violet,
-                fontSize = 10.sp
+                color = if (active) AvroraColors.Fluorite else AvroraColors.Violet,
+                fontSize = 11.sp
             )
         }
         Box(
-            modifier = Modifier.size(44.dp).clickable(onClick = onToggle),
+            modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onToggle),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                if (layer.visible) "◉" else "○",
-                color = if (layer.visible) AvroraColors.Fluorite else AvroraColors.Text.copy(alpha = 0.4f),
-                fontSize = 22.sp
+            AvIcon(
+                if (layer.visible) Ico.EYE else Ico.EYE_OFF,
+                if (layer.visible) AvroraColors.Fluorite else AvroraColors.Text.copy(alpha = 0.4f),
+                22.dp
             )
+        }
+    }
+}
+
+// Шахматка — показывает прозрачные места на миниатюре.
+@Composable
+fun Checker(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val cell = 6.dp.toPx()
+        drawRect(Color(0xFFE8E8EE))
+        val dark = Color(0xFFC4C4D0)
+        var y = 0f
+        var row = 0
+        while (y < size.height) {
+            var x = if (row % 2 == 0) 0f else cell
+            while (x < size.width) {
+                drawRect(dark, topLeft = Offset(x, y), size = Size(cell, cell))
+                x += cell * 2
+            }
+            y += cell
+            row++
         }
     }
 }

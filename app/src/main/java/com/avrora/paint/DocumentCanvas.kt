@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -17,6 +18,8 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -81,8 +84,11 @@ fun DocumentCanvas(
     doc: Document,
     view: ViewState,
     editor: EditorState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onTouch: () -> Unit = {}
 ) {
+    val haptic = LocalHapticFeedback.current
+    val touchCallback by rememberUpdatedState(onTouch)
     Canvas(
         modifier = modifier
             .clipToBounds()
@@ -93,6 +99,7 @@ fun DocumentCanvas(
             .pointerInput(doc, view, editor) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    touchCallback()
                     val startTime = down.uptimeMillis
                     var lastTime = startTime
                     val slop = viewConfiguration.touchSlop
@@ -144,6 +151,7 @@ fun DocumentCanvas(
 
                         if (event == null) {
                             mode = Gesture.PICK
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             editor.pickAt(doc, view.toDoc(lastPos))
                             editor.loupe = lastPos
                             continue
@@ -168,8 +176,14 @@ fun DocumentCanvas(
                                 Gesture.MULTI -> {
                                     // Быстрое касание без движения: 2 пальца — отмена, 3 — повтор.
                                     val quick = lastTime - startTime < 400 && multiTravel < slop * 4
-                                    if (quick && maxPointers == 2) doc.undo()
-                                    if (quick && maxPointers >= 3) doc.redo()
+                                    if (quick && maxPointers == 2) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        editor.flash(if (doc.undo()) "↶  Отмена" else "Нечего отменять")
+                                    }
+                                    if (quick && maxPointers >= 3) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        editor.flash(if (doc.redo()) "↷  Повтор" else "Нечего повторять")
+                                    }
                                 }
                                 Gesture.IGNORE -> Unit
                             }
@@ -225,6 +239,9 @@ fun DocumentCanvas(
                                     if (pc != null && prevDist > 0f) {
                                         multiTravel += (centroid - pc).getDistance() + abs(dist - prevDist)
                                         view.zoomPan(pc, centroid, dist / prevDist)
+                                        if (abs(dist - prevDist) > 0.5f) {
+                                            editor.flash("${(view.scale / view.fitScale * 100).roundToInt()}%")
+                                        }
                                     }
                                     prevCentroid = centroid
                                     prevDist = dist
@@ -252,11 +269,21 @@ fun DocumentCanvas(
         val dstSize = IntSize(w.roundToInt().coerceAtLeast(1), h.roundToInt().coerceAtLeast(1))
         val srcSize = IntSize(doc.width, doc.height)
 
-        // Неоновая рамка вокруг листа.
+        // Мягкое неоновое свечение вокруг листа.
+        val glow = 14.dp.toPx()
+        for (k in 1..4) {
+            val g = glow * k / 4f
+            drawRoundRect(
+                AvroraColors.Violet.copy(alpha = 0.07f),
+                topLeft = topLeft - Offset(g, g),
+                size = Size(w + 2 * g, h + 2 * g),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(g, g)
+            )
+        }
         drawRect(
-            AvroraColors.Violet.copy(alpha = 0.7f),
-            topLeft = topLeft - Offset(2f, 2f),
-            size = Size(w + 4f, h + 4f)
+            AvroraColors.Fluorite.copy(alpha = 0.35f),
+            topLeft = topLeft - Offset(1f, 1f),
+            size = Size(w + 2f, h + 2f)
         )
 
         scale(scaleX = if (view.flipped) -1f else 1f, scaleY = 1f, pivot = pivot) {
@@ -286,6 +313,14 @@ fun DocumentCanvas(
                     )
                 }
             }
+        }
+
+        // Кружок размера кисти, пока двигают ползунок.
+        if (editor.sizePreview) {
+            val r = (editor.size * view.scale / 2f).coerceAtLeast(2f)
+            drawCircle(editor.color.copy(alpha = 0.35f), radius = r, center = center)
+            drawCircle(Color.White, radius = r, center = center, style = Stroke(width = 2.dp.toPx()))
+            drawCircle(Color.Black, radius = r + 2.dp.toPx(), center = center, style = Stroke(width = 1.dp.toPx()))
         }
 
         // Лупа пипетки над пальцем.

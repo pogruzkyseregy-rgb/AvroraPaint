@@ -22,7 +22,15 @@ private val AvroraScheme = darkColorScheme(
     secondary = AvroraColors.Violet,
     onPrimary = AvroraColors.Black,
     onBackground = AvroraColors.Text,
-    onSurface = AvroraColors.Text
+    onSurface = AvroraColors.Text,
+    surfaceVariant = Color(0xFF1A1830),
+    onSurfaceVariant = Color(0xFFB9B6D6),
+    surfaceContainer = Color(0xFF15142A),
+    surfaceContainerHigh = Color(0xFF17162C),
+    surfaceContainerHighest = Color(0xFF1E1C38),
+    secondaryContainer = Color(0xFF3A2470),
+    onSecondaryContainer = AvroraColors.Text,
+    outline = Color(0xFF4B3F7A)
 )
 
 @Composable

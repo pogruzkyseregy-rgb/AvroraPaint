@@ -2,6 +2,7 @@ package com.avrora.paint
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -31,6 +32,20 @@ class EditorState {
 
     // Где на экране показывать лупу пипетки (null — не показывать).
     var loupe by mutableStateOf<Offset?>(null)
+
+    // Короткое уведомление посередине экрана («Отмена», «150%»).
+    var flashText by mutableStateOf("")
+        private set
+    var flashId by mutableIntStateOf(0)
+        private set
+
+    // Показывать кружок размера кисти, пока двигают ползунок.
+    var sizePreview by mutableStateOf(false)
+
+    fun flash(text: String) {
+        flashText = text
+        flashId++
+    }
 
     // У кисти и ластика свои размеры.
     var size: Float
